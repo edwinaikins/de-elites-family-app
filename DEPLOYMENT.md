@@ -127,4 +127,4 @@ sudo nginx -t && sudo systemctl reload nginx
 sudo certbot --nginx -d yourdomain.com
 ```
 
-Certbot sets up auto-renewing HTTPS and updates the nginx config for you.
+Certbot sets up auto-renewing HTTPS and updates the nginx config for you
