@@ -14,7 +14,9 @@ import Events from './components/Events';
 import Footer from './components/Footer';
 import CmsDashboard from './components/CmsDashboard';
 import UpcomingEventBanner from './components/UpcomingEventBanner';
+import MemberPortalModal from './components/MemberPortalModal';
 import { CmsProvider } from './context/CmsContext';
+import { MemberAuthProvider } from './context/MemberAuthContext';
 
 function AppContent() {
   const [cmsOpen, setCmsOpen] = useState(false);
@@ -22,7 +24,7 @@ function AppContent() {
   return (
     <div className="bg-jet-black min-h-screen text-white font-sans antialiased selection:bg-luxury-gold selection:text-black">
       {/* Sticky Premium Navigation Header */}
-      <Navbar onOpenCms={() => setCmsOpen(true)} />
+      <Navbar />
 
       {/* Main Container */}
       <main className="relative">
@@ -48,10 +50,13 @@ function AppContent() {
       </main>
 
       {/* Section 7: Responsive Premium Footer */}
-      <Footer />
+      <Footer onOpenAdmin={() => setCmsOpen(true)} />
 
       {/* Slide-Up CMS Admin Panel */}
       <CmsDashboard isOpen={cmsOpen} onClose={() => setCmsOpen(false)} />
+
+      {/* Member Portal (login + bio/dues/event payments) */}
+      <MemberPortalModal />
 
       {/* Floating Upcoming Event Banner */}
       <UpcomingEventBanner />
@@ -62,7 +67,9 @@ function AppContent() {
 export default function App() {
   return (
     <CmsProvider>
-      <AppContent />
+      <MemberAuthProvider>
+        <AppContent />
+      </MemberAuthProvider>
     </CmsProvider>
   );
 }

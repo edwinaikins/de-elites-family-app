@@ -3,6 +3,9 @@ import path from "path";
 import "dotenv/config";
 import { createServer as createViteServer } from "vite";
 import pg from "pg";
+import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
+import crypto from "crypto";
 import { PILLARS, LEADERSHIP, GALLERY_ITEMS, DEFAULT_SHOUTOUTS, DEFAULT_MEMBERS, DEFAULT_EVENTS, DEFAULT_HERO } from "./src/data";
 
 const { Pool } = pg;
@@ -10,8 +13,61 @@ const { Pool } = pg;
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 
-// Parse large JSON payloads for Base64 image uploads
-app.use(express.json({ limit: "15mb" }));
+// Parse large JSON payloads for Base64 image uploads. We also stash the raw
+// request body on `req` (via the `verify` hook) so the Paystack webhook
+// handler can compute an HMAC signature over the exact bytes Paystack sent —
+// re-serializing the parsed JSON wouldn't reliably match byte-for-byte.
+app.use(
+  express.json({
+    limit: "15mb",
+    verify: (req: any, _res, buf) => {
+      req.rawBody = buf;
+    },
+  })
+);
+
+// --- MEMBER AUTH / PAYMENTS CONFIG ---
+
+function getJwtSecret(): string {
+  const secret = process.env.JWT_SECRET;
+  if (!secret) {
+    throw new Error("JWT_SECRET environment variable is not set.");
+  }
+  return secret;
+}
+
+function getPaystackSecretKey(): string {
+  const key = process.env.PAYSTACK_SECRET_KEY;
+  if (!key) {
+    throw new Error("PAYSTACK_SECRET_KEY environment variable is not set.");
+  }
+  return key;
+}
+
+function getPaystackPublicKey(): string {
+  return process.env.PAYSTACK_PUBLIC_KEY || "";
+}
+
+function getDuesCurrency(): string {
+  return process.env.DUES_CURRENCY || "GHS";
+}
+
+// Middleware: verifies the member's JWT (sent as `Authorization: Bearer <token>`)
+// and attaches the decoded member id to `req.memberId`.
+function requireMemberAuth(req: any, res: any, next: any) {
+  try {
+    const header = req.headers.authorization || "";
+    const token = header.startsWith("Bearer ") ? header.slice(7) : null;
+    if (!token) {
+      return res.status(401).json({ success: false, error: "Not authenticated. Please log in." });
+    }
+    const payload = jwt.verify(token, getJwtSecret()) as { memberId: string };
+    req.memberId = payload.memberId;
+    next();
+  } catch (err) {
+    return res.status(401).json({ success: false, error: "Session expired or invalid. Please log in again." });
+  }
+}
 
 // Default Admin User
 const DEFAULT_USERS = [
@@ -108,6 +164,61 @@ async function initDb() {
         agrees_to_rules_and_discipline BOOLEAN NOT NULL,
         status TEXT NOT NULL DEFAULT 'pending',
         submitted_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+    `);
+
+    // Member portal accounts — distinct from both `member_applications`
+    // (prospective applicants) and the `users` cms_section (CMS admin/
+    // moderator logins). This is the login + profile a real family member
+    // uses to sign into their own portal. Kept off cms_sections since it
+    // carries an email + password hash that must never reach the public
+    // GET /api/cms/data payload.
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS member_accounts (
+        id TEXT PRIMARY KEY,
+        full_name TEXT NOT NULL,
+        email TEXT NOT NULL UNIQUE,
+        password_hash TEXT NOT NULL,
+        bio TEXT NOT NULL DEFAULT '',
+        image TEXT,
+        chapter TEXT,
+        role TEXT,
+        phone TEXT,
+        dues_amount NUMERIC NOT NULL DEFAULT 0,
+        currency TEXT NOT NULL DEFAULT 'GHS',
+        status TEXT NOT NULL DEFAULT 'active',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+    `);
+
+    // Recurring welfare dues payments, one row per period a member pays for.
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS welfare_dues_payments (
+        id TEXT PRIMARY KEY,
+        member_id TEXT NOT NULL REFERENCES member_accounts(id) ON DELETE CASCADE,
+        amount NUMERIC NOT NULL,
+        currency TEXT NOT NULL,
+        period TEXT NOT NULL,
+        reference TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL DEFAULT 'pending',
+        paid_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+    `);
+
+    // Paid event registrations.
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS event_payments (
+        id TEXT PRIMARY KEY,
+        member_id TEXT NOT NULL REFERENCES member_accounts(id) ON DELETE CASCADE,
+        event_id TEXT NOT NULL,
+        event_title TEXT NOT NULL,
+        amount NUMERIC NOT NULL,
+        currency TEXT NOT NULL,
+        reference TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL DEFAULT 'pending',
+        paid_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
       );
     `);
 
@@ -365,6 +476,483 @@ app.delete("/api/applications/:id", async (req, res) => {
   } catch (error: any) {
     console.error("Failed to delete member application:", error);
     res.status(500).json({ success: false, error: error.message || "Failed to delete application." });
+  }
+});
+
+
+// --- MEMBER PORTAL: ACCOUNTS, AUTH, PAYMENTS ---
+//
+// member_accounts is the real login + profile a family member uses to sign
+// into their own portal (distinct from member_applications, and distinct
+// from the CMS `users` admin/moderator accounts). Never exposed via the
+// public cms_sections mechanism.
+
+function mapMemberRow(row: any) {
+  return {
+    id: row.id,
+    fullName: row.full_name,
+    email: row.email,
+    bio: row.bio || "",
+    image: row.image || undefined,
+    chapter: row.chapter || undefined,
+    role: row.role || undefined,
+    phone: row.phone || undefined,
+    duesAmount: Number(row.dues_amount),
+    currency: row.currency,
+    status: row.status,
+    createdAt: row.created_at,
+  };
+}
+
+function mapDuesRow(row: any) {
+  return {
+    id: row.id,
+    memberId: row.member_id,
+    amount: Number(row.amount),
+    currency: row.currency,
+    period: row.period,
+    reference: row.reference,
+    status: row.status,
+    paidAt: row.paid_at || undefined,
+    createdAt: row.created_at,
+  };
+}
+
+function mapEventPaymentRow(row: any) {
+  return {
+    id: row.id,
+    memberId: row.member_id,
+    eventId: row.event_id,
+    eventTitle: row.event_title,
+    amount: Number(row.amount),
+    currency: row.currency,
+    reference: row.reference,
+    status: row.status,
+    paidAt: row.paid_at || undefined,
+    createdAt: row.created_at,
+  };
+}
+
+async function getEventById(eventId: string) {
+  const db = getPool();
+  const result = await db.query("SELECT items FROM cms_sections WHERE section = 'events'");
+  const items = result.rows[0]?.items || DEFAULT_EVENTS;
+  return (items as any[]).find((e) => e.id === eventId) || null;
+}
+
+// --- Member login / self-service ---
+
+app.post("/api/member/login", async (req, res) => {
+  try {
+    const { email, password } = req.body || {};
+    if (!email || !password) {
+      return res.status(400).json({ success: false, error: "Email and password are required." });
+    }
+    const db = getPool();
+    const result = await db.query("SELECT * FROM member_accounts WHERE email = $1", [String(email).trim().toLowerCase()]);
+    const row = result.rows[0];
+    if (!row) {
+      return res.status(401).json({ success: false, error: "Invalid email or password." });
+    }
+    if (row.status !== "active") {
+      return res.status(403).json({ success: false, error: "This account has been suspended. Contact an admin." });
+    }
+    const matches = await bcrypt.compare(password, row.password_hash);
+    if (!matches) {
+      return res.status(401).json({ success: false, error: "Invalid email or password." });
+    }
+    const token = jwt.sign({ memberId: row.id }, getJwtSecret(), { expiresIn: "30d" });
+    res.json({ success: true, data: { token, member: mapMemberRow(row) } });
+  } catch (error: any) {
+    console.error("Member login failed:", error);
+    res.status(500).json({ success: false, error: error.message || "Login failed." });
+  }
+});
+
+app.get("/api/member/me", requireMemberAuth, async (req: any, res) => {
+  try {
+    const db = getPool();
+    const result = await db.query("SELECT * FROM member_accounts WHERE id = $1", [req.memberId]);
+    if (result.rowCount === 0) return res.status(404).json({ success: false, error: "Member not found." });
+    res.json({ success: true, data: mapMemberRow(result.rows[0]) });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message || "Failed to load profile." });
+  }
+});
+
+// Members may only edit their own bio/avatar/phone — email, password, dues
+// amount, and status all require admin action.
+app.patch("/api/member/me", requireMemberAuth, async (req: any, res) => {
+  try {
+    const { bio, image, phone } = req.body || {};
+    const db = getPool();
+    const result = await db.query(
+      `UPDATE member_accounts
+       SET bio = COALESCE($2, bio), image = COALESCE($3, image), phone = COALESCE($4, phone)
+       WHERE id = $1 RETURNING *`,
+      [
+        req.memberId,
+        typeof bio === "string" ? bio : null,
+        typeof image === "string" ? image : null,
+        typeof phone === "string" ? phone : null,
+      ]
+    );
+    if (result.rowCount === 0) return res.status(404).json({ success: false, error: "Member not found." });
+    res.json({ success: true, data: mapMemberRow(result.rows[0]) });
+  } catch (error: any) {
+    console.error("Failed to update member profile:", error);
+    res.status(500).json({ success: false, error: error.message || "Failed to update profile." });
+  }
+});
+
+app.post("/api/member/change-password", requireMemberAuth, async (req: any, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body || {};
+    if (!currentPassword || !newPassword || String(newPassword).length < 8) {
+      return res.status(400).json({ success: false, error: "Current password and a new password (min 8 characters) are required." });
+    }
+    const db = getPool();
+    const result = await db.query("SELECT * FROM member_accounts WHERE id = $1", [req.memberId]);
+    const row = result.rows[0];
+    if (!row) return res.status(404).json({ success: false, error: "Member not found." });
+    const matches = await bcrypt.compare(currentPassword, row.password_hash);
+    if (!matches) return res.status(401).json({ success: false, error: "Current password is incorrect." });
+    const newHash = await bcrypt.hash(String(newPassword), 10);
+    await db.query("UPDATE member_accounts SET password_hash = $2 WHERE id = $1", [req.memberId, newHash]);
+    res.json({ success: true, message: "Password updated." });
+  } catch (error: any) {
+    console.error("Failed to change member password:", error);
+    res.status(500).json({ success: false, error: error.message || "Failed to change password." });
+  }
+});
+
+app.get("/api/member/dues-history", requireMemberAuth, async (req: any, res) => {
+  try {
+    const db = getPool();
+    const result = await db.query("SELECT * FROM welfare_dues_payments WHERE member_id = $1 ORDER BY created_at DESC", [req.memberId]);
+    res.json({ success: true, data: result.rows.map(mapDuesRow) });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message || "Failed to load dues history." });
+  }
+});
+
+app.get("/api/member/event-payments", requireMemberAuth, async (req: any, res) => {
+  try {
+    const db = getPool();
+    const result = await db.query("SELECT * FROM event_payments WHERE member_id = $1 ORDER BY created_at DESC", [req.memberId]);
+    res.json({ success: true, data: result.rows.map(mapEventPaymentRow) });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message || "Failed to load event payment history." });
+  }
+});
+
+// --- Admin: manage member accounts ---
+// NOTE: same posture as the rest of this CMS's admin routes — the CMS login
+// gate is client-side only, not server-side authenticated yet.
+
+app.get("/api/admin/members", async (req, res) => {
+  try {
+    const db = getPool();
+    const result = await db.query("SELECT * FROM member_accounts ORDER BY created_at DESC");
+    res.json({ success: true, data: result.rows.map(mapMemberRow) });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message || "Failed to load member accounts." });
+  }
+});
+
+app.post("/api/admin/members", async (req, res) => {
+  try {
+    const b = req.body || {};
+    if (!b.fullName || !b.email || !b.password) {
+      return res.status(400).json({ success: false, error: "fullName, email, and password are required." });
+    }
+    if (String(b.password).length < 8) {
+      return res.status(400).json({ success: false, error: "Password must be at least 8 characters." });
+    }
+    const email = String(b.email).trim().toLowerCase();
+    const db = getPool();
+    const existing = await db.query("SELECT 1 FROM member_accounts WHERE email = $1", [email]);
+    if ((existing.rowCount ?? 0) > 0) {
+      return res.status(409).json({ success: false, error: "An account with this email already exists." });
+    }
+    const passwordHash = await bcrypt.hash(String(b.password), 10);
+    const id = `member-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const result = await db.query(
+      `INSERT INTO member_accounts (id, full_name, email, password_hash, bio, image, chapter, role, phone, dues_amount, currency, status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'active') RETURNING *`,
+      [
+        id,
+        String(b.fullName).trim(),
+        email,
+        passwordHash,
+        typeof b.bio === "string" ? b.bio : "",
+        b.image || null,
+        b.chapter || null,
+        b.role || null,
+        b.phone || null,
+        Number(b.duesAmount) || 0,
+        b.currency || getDuesCurrency(),
+      ]
+    );
+    res.json({ success: true, data: mapMemberRow(result.rows[0]) });
+  } catch (error: any) {
+    console.error("Failed to create member account:", error);
+    res.status(500).json({ success: false, error: error.message || "Failed to create member account." });
+  }
+});
+
+app.patch("/api/admin/members/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const b = req.body || {};
+    const db = getPool();
+
+    if (b.resetPassword) {
+      if (String(b.resetPassword).length < 8) {
+        return res.status(400).json({ success: false, error: "New password must be at least 8 characters." });
+      }
+      const passwordHash = await bcrypt.hash(String(b.resetPassword), 10);
+      await db.query("UPDATE member_accounts SET password_hash = $2 WHERE id = $1", [id, passwordHash]);
+    }
+
+    const result = await db.query(
+      `UPDATE member_accounts SET
+        full_name = COALESCE($2, full_name),
+        chapter = COALESCE($3, chapter),
+        role = COALESCE($4, role),
+        dues_amount = COALESCE($5, dues_amount),
+        currency = COALESCE($6, currency),
+        status = COALESCE($7, status)
+       WHERE id = $1 RETURNING *`,
+      [
+        id,
+        typeof b.fullName === "string" ? b.fullName.trim() : null,
+        typeof b.chapter === "string" ? b.chapter : null,
+        typeof b.role === "string" ? b.role : null,
+        b.duesAmount !== undefined ? Number(b.duesAmount) : null,
+        typeof b.currency === "string" ? b.currency : null,
+        typeof b.status === "string" ? b.status : null,
+      ]
+    );
+    if (result.rowCount === 0) return res.status(404).json({ success: false, error: "Member account not found." });
+    res.json({ success: true, data: mapMemberRow(result.rows[0]) });
+  } catch (error: any) {
+    console.error("Failed to update member account:", error);
+    res.status(500).json({ success: false, error: error.message || "Failed to update member account." });
+  }
+});
+
+app.delete("/api/admin/members/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const db = getPool();
+    const result = await db.query("DELETE FROM member_accounts WHERE id = $1", [id]);
+    if (result.rowCount === 0) return res.status(404).json({ success: false, error: "Member account not found." });
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message || "Failed to delete member account." });
+  }
+});
+
+app.get("/api/admin/members/:id/dues", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const db = getPool();
+    const result = await db.query("SELECT * FROM welfare_dues_payments WHERE member_id = $1 ORDER BY created_at DESC", [id]);
+    res.json({ success: true, data: result.rows.map(mapDuesRow) });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message || "Failed to load dues history." });
+  }
+});
+
+app.get("/api/admin/members/:id/event-payments", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const db = getPool();
+    const result = await db.query("SELECT * FROM event_payments WHERE member_id = $1 ORDER BY created_at DESC", [id]);
+    res.json({ success: true, data: result.rows.map(mapEventPaymentRow) });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message || "Failed to load event payment history." });
+  }
+});
+
+// --- Payments (Paystack) ---
+//
+// We never let the client dictate an amount. Both "initialize" routes look
+// up the trustworthy amount server-side (the member's configured dues
+// amount, or the event's configured price) and write a 'pending' row before
+// telling the client anything, so a Paystack verify (or webhook) later has
+// something authoritative to check the charge against.
+
+app.post("/api/payments/dues/initialize", requireMemberAuth, async (req: any, res) => {
+  try {
+    const { period } = req.body || {};
+    if (!period || typeof period !== "string") {
+      return res.status(400).json({ success: false, error: "A dues period (e.g. '2026-08') is required." });
+    }
+    const db = getPool();
+    const memberRes = await db.query("SELECT * FROM member_accounts WHERE id = $1", [req.memberId]);
+    const member = memberRes.rows[0];
+    if (!member) return res.status(404).json({ success: false, error: "Member not found." });
+    const amount = Number(member.dues_amount);
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ success: false, error: "No welfare dues amount has been configured for your account. Contact an admin." });
+    }
+
+    const publicKey = getPaystackPublicKey();
+    if (!publicKey) {
+      return res.status(503).json({ success: false, error: "Payments are not configured yet. Contact an admin." });
+    }
+
+    const reference = `dues-${req.memberId}-${period}-${Date.now()}`;
+    await db.query(
+      `INSERT INTO welfare_dues_payments (id, member_id, amount, currency, period, reference, status)
+       VALUES ($1,$2,$3,$4,$5,$6,'pending')`,
+      [`dp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, req.memberId, amount, member.currency, period, reference]
+    );
+
+    res.json({ success: true, data: { reference, amount, currency: member.currency, email: member.email, publicKey } });
+  } catch (error: any) {
+    console.error("Failed to initialize dues payment:", error);
+    res.status(500).json({ success: false, error: error.message || "Failed to start payment." });
+  }
+});
+
+app.post("/api/payments/event/initialize", requireMemberAuth, async (req: any, res) => {
+  try {
+    const { eventId } = req.body || {};
+    if (!eventId) {
+      return res.status(400).json({ success: false, error: "eventId is required." });
+    }
+    const event = await getEventById(eventId);
+    if (!event) return res.status(404).json({ success: false, error: "Event not found." });
+    const amount = Number(event.price) || 0;
+    if (amount <= 0) {
+      return res.status(400).json({ success: false, error: "This event does not require payment." });
+    }
+
+    const publicKey = getPaystackPublicKey();
+    if (!publicKey) {
+      return res.status(503).json({ success: false, error: "Payments are not configured yet. Contact an admin." });
+    }
+
+    const db = getPool();
+    const memberRes = await db.query("SELECT email FROM member_accounts WHERE id = $1", [req.memberId]);
+    const member = memberRes.rows[0];
+    if (!member) return res.status(404).json({ success: false, error: "Member not found." });
+
+    const currency = event.currency || getDuesCurrency();
+    const reference = `event-${req.memberId}-${eventId}-${Date.now()}`;
+    await db.query(
+      `INSERT INTO event_payments (id, member_id, event_id, event_title, amount, currency, reference, status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,'pending')`,
+      [`ep-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, req.memberId, eventId, event.title, amount, currency, reference]
+    );
+
+    res.json({ success: true, data: { reference, amount, currency, email: member.email, publicKey } });
+  } catch (error: any) {
+    console.error("Failed to initialize event payment:", error);
+    res.status(500).json({ success: false, error: error.message || "Failed to start payment." });
+  }
+});
+
+async function findPaymentByReference(reference: string) {
+  const db = getPool();
+  const duesRes = await db.query("SELECT * FROM welfare_dues_payments WHERE reference = $1", [reference]);
+  if ((duesRes.rowCount ?? 0) > 0) return { table: "welfare_dues_payments" as const, row: duesRes.rows[0] };
+  const eventRes = await db.query("SELECT * FROM event_payments WHERE reference = $1", [reference]);
+  if ((eventRes.rowCount ?? 0) > 0) return { table: "event_payments" as const, row: eventRes.rows[0] };
+  return null;
+}
+
+async function verifyWithPaystack(reference: string) {
+  const res = await fetch(`https://api.paystack.co/transaction/verify/${encodeURIComponent(reference)}`, {
+    headers: { Authorization: `Bearer ${getPaystackSecretKey()}` },
+  });
+  const json: any = await res.json();
+  if (!res.ok || !json.status) {
+    throw new Error(json.message || "Failed to verify transaction with Paystack.");
+  }
+  return json.data;
+}
+
+// Shared by the member-facing verify endpoint and the webhook handler.
+// Re-checks status/amount/currency against what WE recorded at initialize
+// time before ever marking a payment as successful.
+async function verifyAndRecordPayment(reference: string, expectedMemberId?: string) {
+  const found = await findPaymentByReference(reference);
+  if (!found) {
+    return { success: false as const, error: "Payment record not found." };
+  }
+  const { table, row } = found;
+  if (expectedMemberId && row.member_id !== expectedMemberId) {
+    return { success: false as const, error: "This payment does not belong to your account." };
+  }
+  if (row.status === "success") {
+    return { success: true as const, table, row };
+  }
+
+  const data = await verifyWithPaystack(reference);
+  const expectedSubunit = Math.round(Number(row.amount) * 100);
+  const isValid = data.status === "success" && data.amount === expectedSubunit && data.currency === row.currency;
+
+  const db = getPool();
+  if (isValid) {
+    const updated = await db.query(
+      `UPDATE ${table} SET status = 'success', paid_at = now() WHERE reference = $1 RETURNING *`,
+      [reference]
+    );
+    return { success: true as const, table, row: updated.rows[0] };
+  } else {
+    await db.query(`UPDATE ${table} SET status = 'failed' WHERE reference = $1 AND status = 'pending'`, [reference]);
+    return { success: false as const, error: "Payment could not be verified with Paystack." };
+  }
+}
+
+app.post("/api/payments/verify", requireMemberAuth, async (req: any, res) => {
+  try {
+    const { reference } = req.body || {};
+    if (!reference) return res.status(400).json({ success: false, error: "reference is required." });
+    const result = await verifyAndRecordPayment(reference, req.memberId);
+    if (!result.success) {
+      return res.status(400).json({ success: false, error: result.error });
+    }
+    const data = result.table === "welfare_dues_payments" ? mapDuesRow(result.row) : mapEventPaymentRow(result.row);
+    res.json({ success: true, data, type: result.table === "welfare_dues_payments" ? "dues" : "event" });
+  } catch (error: any) {
+    console.error("Failed to verify payment:", error);
+    res.status(500).json({ success: false, error: error.message || "Failed to verify payment." });
+  }
+});
+
+// Paystack webhook — a second, server-to-server confirmation path in case
+// the member closes their browser before the client-side verify call fires.
+// Signature is checked over the raw request body (see the express.json
+// `verify` hook above) using HMAC-SHA512 with the Paystack secret key.
+app.post("/api/paystack/webhook", async (req: any, res) => {
+  try {
+    const signature = req.headers["x-paystack-signature"];
+    const secret = process.env.PAYSTACK_SECRET_KEY;
+    if (!secret || !signature || !req.rawBody) {
+      return res.sendStatus(400);
+    }
+    const expected = crypto.createHmac("sha512", secret).update(req.rawBody).digest("hex");
+    if (expected !== signature) {
+      console.warn("Rejected Paystack webhook with invalid signature.");
+      return res.sendStatus(401);
+    }
+
+    const event = req.body;
+    if (event?.event === "charge.success" && event.data?.reference) {
+      await verifyAndRecordPayment(event.data.reference).catch((err) => {
+        console.error("Webhook payment verification failed:", err);
+      });
+    }
+
+    res.sendStatus(200);
+  } catch (error) {
+    console.error("Error handling Paystack webhook:", error);
+    res.sendStatus(500);
   }
 });
 

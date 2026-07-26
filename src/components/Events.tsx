@@ -1,10 +1,56 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
-import { Calendar, MapPin, Clock, Crown, ArrowUpRight, Tag } from 'lucide-react';
+import { Calendar, MapPin, Clock, Crown, ArrowUpRight, Tag, CreditCard, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
 import { useCms } from '../context/CmsContext';
+import { useMemberAuth } from '../context/MemberAuthContext';
+import { fetchMyEventPayments, initializeEventPayment, verifyPayment } from '../lib/memberClient';
+import { payWithPaystack } from '../lib/paystack';
 
 export default function Events() {
   const { events } = useCms();
+  const { member, token, openPortal } = useMemberAuth();
+
+  const [paidEventIds, setPaidEventIds] = useState<Set<string>>(new Set());
+  const [payingId, setPayingId] = useState<string | null>(null);
+  const [errorById, setErrorById] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    if (!token) {
+      setPaidEventIds(new Set());
+      return;
+    }
+    fetchMyEventPayments(token)
+      .then((payments) => {
+        setPaidEventIds(new Set(payments.filter((p) => p.status === 'success').map((p) => p.eventId)));
+      })
+      .catch(() => {});
+  }, [token]);
+
+  const handlePayForEvent = async (eventId: string) => {
+    if (!member || !token) {
+      openPortal();
+      return;
+    }
+    setErrorById((prev) => ({ ...prev, [eventId]: '' }));
+    setPayingId(eventId);
+    try {
+      const init = await initializeEventPayment(token, eventId);
+      const { reference } = await payWithPaystack({
+        publicKey: init.publicKey,
+        email: init.email,
+        amount: init.amount,
+        currency: init.currency,
+        reference: init.reference,
+        metadata: { type: 'event', eventId },
+      });
+      await verifyPayment(token, reference);
+      setPaidEventIds((prev) => new Set(prev).add(eventId));
+    } catch (err: any) {
+      setErrorById((prev) => ({ ...prev, [eventId]: err.message || 'Payment could not be completed.' }));
+    } finally {
+      setPayingId(null);
+    }
+  };
 
   // Stagger animation container
   const containerVariants = {
@@ -133,6 +179,44 @@ export default function Events() {
                       </div>
                     </div>
                   </div>
+                </div>
+
+                {/* Registration / Payment */}
+                <div className="px-6 pb-6 space-y-2">
+                  {errorById[event.id] && (
+                    <div className="flex items-center gap-1.5 text-[10px] text-red-500 bg-red-500/10 border border-red-500/20 p-2 rounded">
+                      <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                      <span>{errorById[event.id]}</span>
+                    </div>
+                  )}
+
+                  {event.price && event.price > 0 ? (
+                    paidEventIds.has(event.id) ? (
+                      <div className="w-full py-3 rounded bg-green-950/20 border border-green-900/40 text-green-400 font-sans font-black tracking-widest text-xs uppercase flex items-center justify-center gap-2">
+                        <CheckCircle2 className="w-4 h-4" />
+                        Registered
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => handlePayForEvent(event.id)}
+                        disabled={payingId === event.id}
+                        className="w-full py-3 rounded bg-gradient-to-r from-luxury-gold to-luxury-gold-dark text-black font-sans font-black tracking-widest text-xs uppercase transition-all duration-300 shadow-[0_4px_15px_rgba(212,175,55,0.2)] hover:shadow-[0_0_25px_rgba(212,175,55,0.4)] cursor-pointer flex items-center justify-center gap-2 disabled:opacity-60"
+                      >
+                        {payingId === event.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <CreditCard className="w-4 h-4" />}
+                        Pay &amp; Register — {event.currency || 'GHS'} {event.price.toFixed(2)}
+                      </button>
+                    )
+                  ) : event.buttonLink ? (
+                    <a
+                      href={event.buttonLink}
+                      target={event.buttonLink.startsWith('#') ? undefined : '_blank'}
+                      rel={event.buttonLink.startsWith('#') ? undefined : 'noopener noreferrer'}
+                      className="w-full py-3 rounded bg-charcoal-card border border-gray-800 hover:border-luxury-gold text-white hover:text-luxury-gold font-sans font-black tracking-widest text-xs uppercase transition-all duration-300 cursor-pointer flex items-center justify-center gap-2"
+                    >
+                      {event.buttonText || 'Register'}
+                      <ArrowUpRight className="w-3.5 h-3.5" />
+                    </a>
+                  ) : null}
                 </div>
 
               </motion.div>

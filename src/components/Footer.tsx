@@ -1,8 +1,12 @@
 import React from 'react';
-import { Twitter, Instagram, Facebook, Youtube, Flame, MessageCircle, ArrowUp } from 'lucide-react';
+import { Twitter, Instagram, Facebook, Youtube, Flame, MessageCircle, ArrowUp, ShieldCheck } from 'lucide-react';
 import { useCms } from '../context/CmsContext';
 
-export default function Footer() {
+interface FooterProps {
+  onOpenAdmin: () => void;
+}
+
+export default function Footer({ onOpenAdmin }: FooterProps) {
   const { hero } = useCms();
   const heroItem = hero?.[0];
   const logoUrl = heroItem?.logo;
@@ -123,14 +127,27 @@ export default function Footer() {
             </p>
           </div>
 
-          {/* Scroll Back to Top Button */}
-          <button
-            onClick={handleScrollToTop}
-            className="group flex items-center gap-2 px-4 py-2 border border-gray-900 hover:border-luxury-gold/40 rounded text-[9px] uppercase font-black tracking-widest text-gray-500 hover:text-luxury-gold transition-all bg-charcoal-card/40 cursor-pointer"
-          >
-            Back to Top
-            <ArrowUp className="w-3.5 h-3.5 group-hover:-translate-y-0.5 transition-transform" />
-          </button>
+          <div className="flex items-center gap-3">
+            {/* Staff/CMS admin access — deliberately understated; the main
+                nav's login button is for regular members, not admins. */}
+            <button
+              onClick={onOpenAdmin}
+              className="group flex items-center gap-1.5 px-3 py-2 rounded text-[9px] uppercase font-black tracking-widest text-gray-700 hover:text-gray-400 transition-all cursor-pointer"
+              title="Staff / CMS Admin Access"
+            >
+              <ShieldCheck className="w-3 h-3" />
+              Staff Login
+            </button>
+
+            {/* Scroll Back to Top Button */}
+            <button
+              onClick={handleScrollToTop}
+              className="group flex items-center gap-2 px-4 py-2 border border-gray-900 hover:border-luxury-gold/40 rounded text-[9px] uppercase font-black tracking-widest text-gray-500 hover:text-luxury-gold transition-all bg-charcoal-card/40 cursor-pointer"
+            >
+              Back to Top
+              <ArrowUp className="w-3.5 h-3.5 group-hover:-translate-y-0.5 transition-transform" />
+            </button>
+          </div>
         </div>
 
       </div>

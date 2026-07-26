@@ -1,18 +1,19 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
-import { Award, Menu, X, Flame, LogIn } from 'lucide-react';
+import { Award, Menu, X, Flame, LogIn, UserCircle2 } from 'lucide-react';
 import { useCms } from '../context/CmsContext';
+import { useMemberAuth } from '../context/MemberAuthContext';
 
-interface NavbarProps {
-  onOpenCms: () => void;
-}
-
-export default function Navbar({ onOpenCms }: NavbarProps) {
+// Admin/CMS access was intentionally moved out of the main nav (see Footer's
+// subtle "Staff Login" link) now that this button is a real member portal
+// entry point for regular family members, not the CMS admin gate.
+export default function Navbar() {
   const [isScrolled, setIsScrolled] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const { hero } = useCms();
   const heroItem = hero?.[0];
   const logoUrl = heroItem?.logo;
+  const { member, openPortal } = useMemberAuth();
 
   useEffect(() => {
     const handleScroll = () => {
@@ -86,11 +87,11 @@ export default function Navbar({ onOpenCms }: NavbarProps) {
         {/* Desktop CTA */}
         <div className="hidden md:flex items-center gap-3">
           <button
-            onClick={onOpenCms}
+            onClick={openPortal}
             className="p-2.5 rounded bg-charcoal-card border border-gray-800 text-gray-400 hover:text-luxury-gold hover:border-luxury-gold/50 transition-all cursor-pointer flex items-center justify-center hover:scale-105"
-            title="Member Login"
+            title={member ? `My Portal (${member.fullName})` : 'Member Login'}
           >
-            <LogIn className="w-4 h-4" />
+            {member ? <UserCircle2 className="w-4 h-4" /> : <LogIn className="w-4 h-4" />}
           </button>
           
           <button
@@ -135,12 +136,12 @@ export default function Navbar({ onOpenCms }: NavbarProps) {
             <button
               onClick={() => {
                 setMobileMenuOpen(false);
-                onOpenCms();
+                openPortal();
               }}
               className="w-full text-center py-3 rounded bg-charcoal-card border border-gray-800 text-white hover:text-luxury-gold font-sans font-black tracking-widest uppercase transition-all duration-300 flex items-center justify-center gap-2"
             >
-              <LogIn className="w-4 h-4" />
-              Member Login
+              {member ? <UserCircle2 className="w-4 h-4" /> : <LogIn className="w-4 h-4" />}
+              {member ? 'My Portal' : 'Member Login'}
             </button>
 
             <button

@@ -116,6 +116,51 @@ If `systemctl --user` says it can't connect to the bus, re-run
 If nginx 502s, the Node process probably isn't running — check the service
 status above first.
 
+## Enabling the member portal + Paystack payments
+
+The member portal, welfare dues, and paid event registration feature needs
+four new environment variables added to the app's `.env` file **on the VM**
+(these are runtime secrets, not GitHub Actions secrets — same file
+`deploy/setup-vm.sh` created for `DATABASE_URL`):
+
+```bash
+ssh -i <PRIVATE_KEY_PATH> edwinaikins@178.63.178.212
+nano ~/apps/de-elites-family/.env
+```
+
+Add these lines (see `.env.example` for what each one means):
+
+```
+JWT_SECRET=<run: openssl rand -hex 32>
+PAYSTACK_SECRET_KEY=sk_live_or_test_...
+PAYSTACK_PUBLIC_KEY=pk_live_or_test_...
+DUES_CURRENCY=GHS
+```
+
+Get the Paystack keys from your Paystack dashboard under **Settings → API
+Keys & Webhooks**. Use the `sk_test_...` / `pk_test_...` keys first to try
+the flow end-to-end before switching to live keys. While you're in that
+dashboard screen, also add a webhook URL pointing at
+`http://178.63.178.212/api/paystack/webhook` (or your domain once HTTPS is
+set up) — this is a second confirmation path in case a member closes their
+browser mid-payment.
+
+Then restart the service so it picks up the new variables:
+
+```bash
+systemctl --user restart de-elites-family
+curl http://127.0.0.1:3000/api/health
+```
+
+Until `PAYSTACK_PUBLIC_KEY`/`PAYSTACK_SECRET_KEY` are set, the "Pay & Register"
+and "Pay Dues" buttons will show a clear "Payments are not configured yet"
+error instead of failing silently — safe to deploy ahead of having real
+Paystack keys.
+
+Member portal accounts themselves are created by an admin from the CMS
+(**Staff Login** link in the site footer → **Member Accounts** tab) — there's
+no public self-registration.
+
 ## Adding a real domain + HTTPS later
 
 Once you point a domain's A record at `178.63.178.212`:

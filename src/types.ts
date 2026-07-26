@@ -68,6 +68,11 @@ export interface EliteEvent {
   category: 'Meeting' | 'Summit' | 'Concert' | 'Community' | 'Launch';
   buttonText?: string;
   buttonLink?: string;
+  // When set (> 0), the event requires payment to register and a "Pay &
+  // Register" flow (Paystack) is shown instead of a plain link button.
+  // Left unset or 0 for free events.
+  price?: number;
+  currency?: string;
 }
 
 export interface HeroConfig {
@@ -91,6 +96,82 @@ export interface CmsUser {
   username: string;
   password?: string;
   role: 'admin' | 'moderator';
+}
+
+// --- Member Portal (accounts, auth, payments) ---
+//
+// MemberAccount is a distinct concept from both `Member` (the old public
+// Member Directory profile, currently unused in the UI) and `CmsUser` (the
+// admin/moderator CMS login). It's the login + profile a real family member
+// uses to sign into their own portal, edit their bio, and track/pay dues.
+// Kept on its own backend table (never part of the public cms_sections
+// payload) since it carries an email + password hash.
+
+export interface MemberAccount {
+  id: string;
+  fullName: string;
+  email: string;
+  bio: string;
+  image?: string;
+  chapter?: string;
+  role?: string;
+  phone?: string;
+  // Configurable per member (per admin decision) — the recurring welfare
+  // dues amount this member is expected to pay each period, in the
+  // platform's configured currency (see DUES_CURRENCY env var).
+  duesAmount: number;
+  currency: string;
+  status: 'active' | 'suspended';
+  createdAt: string;
+}
+
+// The subset of MemberAccount fields a member can edit about themselves via
+// the portal (bio + a few soft profile fields). Dues amount, email, and
+// status are admin-controlled only.
+export interface MemberProfileUpdate {
+  bio?: string;
+  image?: string;
+  phone?: string;
+}
+
+export type PaymentStatus = 'pending' | 'success' | 'failed';
+
+export interface WelfareDuesPayment {
+  id: string;
+  memberId: string;
+  amount: number;
+  currency: string;
+  // The dues period this payment covers, e.g. "2026-08" for August 2026.
+  period: string;
+  reference: string;
+  status: PaymentStatus;
+  paidAt?: string;
+  createdAt: string;
+}
+
+export interface EventPayment {
+  id: string;
+  memberId: string;
+  eventId: string;
+  eventTitle: string;
+  amount: number;
+  currency: string;
+  reference: string;
+  status: PaymentStatus;
+  paidAt?: string;
+  createdAt: string;
+}
+
+// Returned by POST /api/payments/*/initialize — everything the frontend
+// needs to open the Paystack Inline checkout. The amount/reference are
+// generated server-side so the client can never manipulate what gets
+// charged.
+export interface PaymentInitResponse {
+  reference: string;
+  amount: number;
+  currency: string;
+  email: string;
+  publicKey: string;
 }
 
 export interface MemberApplication {

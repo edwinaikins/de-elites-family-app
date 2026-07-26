@@ -5,19 +5,23 @@ import {
   RefreshCw, Heart, ShieldCheck, Users, Flame,
   Award, Compass, Image, Calendar,
   X, Check, RotateCcw, MessageSquare, AlertCircle, LogOut,
-  UserCheck, Loader2, Mail, Phone
+  UserCheck, Loader2, Mail, Phone, Wallet, Ticket, UserPlus
 } from 'lucide-react';
 import { useCms } from '../context/CmsContext';
 import { ImageUpload } from './ImageUpload';
-import { Pillar, Leader, GalleryItem, Shoutout, EliteEvent, HeroConfig, CmsUser, MemberApplication } from '../types';
+import { Pillar, Leader, GalleryItem, Shoutout, EliteEvent, HeroConfig, CmsUser, MemberApplication, MemberAccount, WelfareDuesPayment, EventPayment } from '../types';
 import { fetchMemberApplications, updateMemberApplicationStatus, deleteMemberApplication } from '../lib/cmsClient';
+import {
+  fetchAllMemberAccounts, createMemberAccount, updateMemberAccount, deleteMemberAccount,
+  fetchMemberDuesHistoryAdmin, fetchMemberEventPaymentsAdmin,
+} from '../lib/memberClient';
 
 interface CmsDashboardProps {
   isOpen: boolean;
   onClose: () => void;
 }
 
-type TabType = 'pillars' | 'leaders' | 'gallery' | 'shoutouts' | 'events' | 'hero' | 'users' | 'applications';
+type TabType = 'pillars' | 'leaders' | 'gallery' | 'shoutouts' | 'events' | 'hero' | 'users' | 'applications' | 'memberAccounts';
 
 export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
   const {
@@ -44,6 +48,28 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
   const [applications, setApplications] = useState<MemberApplication[]>([]);
   const [applicationsLoading, setApplicationsLoading] = useState(false);
   const [applicationsError, setApplicationsError] = useState<string | null>(null);
+
+  // Member portal accounts (logins for real family members) — also kept off
+  // the public CmsDatabase mechanism since accounts carry an email/password.
+  const [memberAccounts, setMemberAccounts] = useState<MemberAccount[]>([]);
+  const [memberAccountsLoading, setMemberAccountsLoading] = useState(false);
+  const [memberAccountsError, setMemberAccountsError] = useState<string | null>(null);
+  const [selectedMemberDues, setSelectedMemberDues] = useState<WelfareDuesPayment[]>([]);
+  const [selectedMemberEventPayments, setSelectedMemberEventPayments] = useState<EventPayment[]>([]);
+  const [selectedMemberHistoryLoading, setSelectedMemberHistoryLoading] = useState(false);
+
+  // New member account creation form
+  const [newMemberName, setNewMemberName] = useState('');
+  const [newMemberEmail, setNewMemberEmail] = useState('');
+  const [newMemberPassword, setNewMemberPassword] = useState('');
+  const [newMemberDues, setNewMemberDues] = useState('');
+  const [newMemberChapter, setNewMemberChapter] = useState('');
+  const [newMemberRole, setNewMemberRole] = useState('');
+
+  // Draft edits for the currently selected member account (dues amount etc.)
+  const [memberEditDues, setMemberEditDues] = useState('');
+  const [memberEditStatus, setMemberEditStatus] = useState<'active' | 'suspended'>('active');
+  const [memberResetPassword, setMemberResetPassword] = useState('');
 
   // Track currently active item for editing or "new" state
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
@@ -94,6 +120,40 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
         .finally(() => setApplicationsLoading(false));
     }
   }, [isOpen, activeTab]);
+
+  // Load member portal accounts when that tab is opened
+  const loadMemberAccounts = React.useCallback(() => {
+    setMemberAccountsLoading(true);
+    setMemberAccountsError(null);
+    fetchAllMemberAccounts()
+      .then(setMemberAccounts)
+      .catch((err: any) => setMemberAccountsError(err.message || 'Failed to load member accounts'))
+      .finally(() => setMemberAccountsLoading(false));
+  }, []);
+
+  React.useEffect(() => {
+    if (isOpen && activeTab === 'memberAccounts') {
+      loadMemberAccounts();
+    }
+  }, [isOpen, activeTab, loadMemberAccounts]);
+
+  // Load the selected member's payment history + hydrate the edit form
+  React.useEffect(() => {
+    if (activeTab !== 'memberAccounts' || !selectedItemId) return;
+    const selected = memberAccounts.find((m) => m.id === selectedItemId);
+    if (!selected) return;
+    setMemberEditDues(String(selected.duesAmount ?? 0));
+    setMemberEditStatus(selected.status);
+    setMemberResetPassword('');
+    setSelectedMemberHistoryLoading(true);
+    Promise.all([fetchMemberDuesHistoryAdmin(selected.id), fetchMemberEventPaymentsAdmin(selected.id)])
+      .then(([dues, eventPayments]) => {
+        setSelectedMemberDues(dues);
+        setSelectedMemberEventPayments(eventPayments);
+      })
+      .catch(() => {})
+      .finally(() => setSelectedMemberHistoryLoading(false));
+  }, [activeTab, selectedItemId, memberAccounts]);
 
   if (!isOpen) return null;
 
@@ -248,6 +308,66 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
       if (selectedItemId === id) setSelectedItemId(null);
     } catch (err: any) {
       setApplicationsError(err.message || 'Failed to delete application');
+    }
+  };
+
+  // MEMBER ACCOUNTS (portal logins) ACTIONS
+  const handleCreateMemberAccount = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setMemberAccountsError(null);
+    if (!newMemberName.trim() || !newMemberEmail.trim() || !newMemberPassword.trim()) {
+      setMemberAccountsError('Full name, email, and a temporary password are required.');
+      return;
+    }
+    if (newMemberPassword.trim().length < 8) {
+      setMemberAccountsError('Temporary password must be at least 8 characters.');
+      return;
+    }
+    try {
+      const created = await createMemberAccount({
+        fullName: newMemberName.trim(),
+        email: newMemberEmail.trim(),
+        password: newMemberPassword.trim(),
+        duesAmount: newMemberDues ? Number(newMemberDues) : 0,
+        chapter: newMemberChapter.trim() || undefined,
+        role: newMemberRole.trim() || undefined,
+      });
+      setMemberAccounts(prev => [created, ...prev]);
+      setNewMemberName('');
+      setNewMemberEmail('');
+      setNewMemberPassword('');
+      setNewMemberDues('');
+      setNewMemberChapter('');
+      setNewMemberRole('');
+      triggerNotification(`Member account created for ${created.fullName}. Share the temporary password with them securely.`);
+    } catch (err: any) {
+      setMemberAccountsError(err.message || 'Failed to create member account');
+    }
+  };
+
+  const handleSaveMemberEdits = async (id: string) => {
+    try {
+      const updated = await updateMemberAccount(id, {
+        duesAmount: memberEditDues ? Number(memberEditDues) : 0,
+        status: memberEditStatus,
+        ...(memberResetPassword.trim() ? { resetPassword: memberResetPassword.trim() } : {}),
+      });
+      setMemberAccounts(prev => prev.map(m => m.id === id ? updated : m));
+      setMemberResetPassword('');
+      triggerNotification('Member account updated.');
+    } catch (err: any) {
+      setMemberAccountsError(err.message || 'Failed to update member account');
+    }
+  };
+
+  const handleDeleteMemberAccount = async (id: string) => {
+    if (!window.confirm("Are you sure you want to permanently delete this member's portal account? They will lose access immediately.")) return;
+    try {
+      await deleteMemberAccount(id);
+      setMemberAccounts(prev => prev.filter(m => m.id !== id));
+      if (selectedItemId === id) setSelectedItemId(null);
+    } catch (err: any) {
+      setMemberAccountsError(err.message || 'Failed to delete member account');
     }
   };
 
@@ -535,7 +655,8 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                 { type: 'events', label: '5. Upcoming Events', count: localEvents.length, desc: 'Concerts & Summits' },
                 { type: 'hero', label: '6. Hero & Branding', count: localHero.length, desc: 'Title, Logo & Stats' },
                 { type: 'users', label: '7. User Accounts', count: localUsers.length, desc: 'Manage CMS Users' },
-                { type: 'applications', label: '8. Applications', count: applications.length, desc: 'Prospective Members' }
+                { type: 'applications', label: '8. Applications', count: applications.length, desc: 'Prospective Members' },
+                { type: 'memberAccounts', label: '9. Member Accounts', count: memberAccounts.length, desc: 'Portal Logins & Dues' }
               ].map((item) => (
                 <button
                   key={item.type}
@@ -594,7 +715,7 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
 
               {/* Action and Save buttons */}
               <div className="flex items-center gap-3">
-                {activeTab !== 'pillars' && activeTab !== 'hero' && activeTab !== 'applications' && (
+                {activeTab !== 'pillars' && activeTab !== 'hero' && activeTab !== 'applications' && activeTab !== 'memberAccounts' && (
                   <button
                     onClick={() => {
                       if (activeTab === 'leaders') handleAddLeader();
@@ -609,7 +730,7 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                   </button>
                 )}
 
-                {activeTab !== 'applications' && (
+                {activeTab !== 'applications' && activeTab !== 'memberAccounts' && (
                   <button
                     onClick={() => handleSaveSection(activeTab)}
                     disabled={saveLoading}
@@ -1345,6 +1466,35 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                               </div>
                             </div>
 
+                            <div className="grid grid-cols-2 gap-4 bg-jet-black/60 border border-gray-900 rounded p-3">
+                              <div className="flex flex-col gap-1.5">
+                                <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">
+                                  Ticket Price (leave 0 for free)
+                                </label>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  step="0.01"
+                                  value={event.price ?? 0}
+                                  onChange={(e) => handleEventChange(event.id, 'price', Number(e.target.value))}
+                                  className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold"
+                                />
+                              </div>
+                              <div className="flex flex-col gap-1.5">
+                                <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">Currency</label>
+                                <input
+                                  type="text"
+                                  placeholder="GHS"
+                                  value={event.currency || ''}
+                                  onChange={(e) => handleEventChange(event.id, 'currency', e.target.value.toUpperCase())}
+                                  className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold"
+                                />
+                              </div>
+                              <p className="col-span-2 text-[9px] text-gray-500 leading-relaxed">
+                                When a price is set, the public site shows a "Pay & Register" button (Paystack) here instead of the CTA link above.
+                              </p>
+                            </div>
+
                             <ImageUpload
                               value={event.image}
                               onChange={(val) => handleEventChange(event.id, 'image', val)}
@@ -1899,6 +2049,274 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                         <div className="py-24 text-center text-gray-500 text-xs">
                           <UserCheck className="w-8 h-8 text-luxury-gold/25 mx-auto mb-3" />
                           Select an application on the left side to review its details.
+                        </div>
+                      )}
+                    </div>
+
+                  </div>
+                </div>
+              )}
+
+              {/* MEMBER ACCOUNTS MODULE VIEW */}
+              {activeTab === 'memberAccounts' && (
+                <div className="flex-1 overflow-y-auto max-w-6xl w-full mx-auto space-y-6">
+                  {memberAccountsError && (
+                    <div className="flex items-center gap-2 text-xs text-red-500 bg-red-500/10 border border-red-500/20 p-3 rounded">
+                      <AlertCircle className="w-4 h-4 shrink-0" />
+                      <span>{memberAccountsError}</span>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
+
+                    {/* Accounts list + creation form */}
+                    <div className="col-span-1 space-y-6">
+                      <div className="bg-charcoal-card rounded-lg border border-gray-900 p-6 space-y-4">
+                        <div>
+                          <h4 className="font-display text-xs font-black text-luxury-gold uppercase tracking-widest mb-1">
+                            Member Accounts ({memberAccounts.length})
+                          </h4>
+                          <p className="text-[10px] text-gray-500 font-sans">
+                            Portal logins for real family members — bio editing, welfare dues, and event payments.
+                          </p>
+                        </div>
+
+                        {memberAccountsLoading ? (
+                          <div className="py-12 text-center text-gray-500 text-xs flex flex-col items-center gap-2">
+                            <Loader2 className="w-6 h-6 animate-spin text-luxury-gold/50" />
+                            Loading...
+                          </div>
+                        ) : memberAccounts.length === 0 ? (
+                          <div className="py-12 text-center text-gray-500 text-xs">No member accounts yet.</div>
+                        ) : (
+                          <div className="space-y-2 max-h-[360px] overflow-y-auto pr-1">
+                            {memberAccounts.map((m) => (
+                              <div
+                                key={m.id}
+                                onClick={() => setSelectedItemId(m.id)}
+                                className={`p-3 rounded border flex items-center justify-between gap-3 cursor-pointer group transition-all ${
+                                  selectedItemId === m.id
+                                    ? 'bg-luxury-gold/10 border-luxury-gold/30 text-luxury-gold'
+                                    : 'bg-jet-black border-transparent hover:border-gray-800 text-gray-300'
+                                }`}
+                              >
+                                <div className="min-w-0">
+                                  <h4 className="font-display text-xs font-black uppercase truncate leading-tight">
+                                    {m.fullName}
+                                  </h4>
+                                  <p className="font-sans text-[9px] text-gray-500 truncate">{m.email}</p>
+                                  <span className={`inline-block mt-1 text-[8px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded ${
+                                    m.status === 'active' ? 'bg-green-950/40 text-green-400' : 'bg-red-950/40 text-red-400'
+                                  }`}>
+                                    {m.status}
+                                  </span>
+                                </div>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleDeleteMemberAccount(m.id);
+                                  }}
+                                  className="text-gray-600 hover:text-red-400 transition-colors cursor-pointer p-1 shrink-0"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="bg-charcoal-card rounded-lg border border-gray-900 p-6 space-y-4">
+                        <h4 className="font-display text-sm font-black text-luxury-gold uppercase tracking-widest mb-1 flex items-center gap-2">
+                          <UserPlus className="w-4 h-4" />
+                          New Member Account
+                        </h4>
+                        <form onSubmit={handleCreateMemberAccount} className="space-y-3">
+                          <input
+                            type="text"
+                            placeholder="Full Name"
+                            value={newMemberName}
+                            onChange={(e) => setNewMemberName(e.target.value)}
+                            className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold w-full"
+                          />
+                          <input
+                            type="email"
+                            placeholder="Email"
+                            value={newMemberEmail}
+                            onChange={(e) => setNewMemberEmail(e.target.value)}
+                            className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold w-full"
+                          />
+                          <input
+                            type="text"
+                            placeholder="Temporary Password (min 8 chars)"
+                            value={newMemberPassword}
+                            onChange={(e) => setNewMemberPassword(e.target.value)}
+                            className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold w-full"
+                          />
+                          <div className="grid grid-cols-2 gap-2">
+                            <input
+                              type="text"
+                              placeholder="Chapter (optional)"
+                              value={newMemberChapter}
+                              onChange={(e) => setNewMemberChapter(e.target.value)}
+                              className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold"
+                            />
+                            <input
+                              type="text"
+                              placeholder="Role (optional)"
+                              value={newMemberRole}
+                              onChange={(e) => setNewMemberRole(e.target.value)}
+                              className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold"
+                            />
+                          </div>
+                          <input
+                            type="number"
+                            min={0}
+                            step="0.01"
+                            placeholder="Monthly Welfare Dues (0 = none)"
+                            value={newMemberDues}
+                            onChange={(e) => setNewMemberDues(e.target.value)}
+                            className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold w-full"
+                          />
+                          <button
+                            type="submit"
+                            className="w-full px-5 py-2.5 bg-luxury-gold hover:bg-luxury-gold-dark text-black font-sans font-black tracking-widest text-[10px] uppercase rounded transition-colors cursor-pointer"
+                          >
+                            Create Account
+                          </button>
+                        </form>
+                      </div>
+                    </div>
+
+                    {/* Selected member detail: dues amount / status / password reset + history */}
+                    <div className="col-span-1 lg:col-span-2 bg-charcoal-card rounded-lg border border-gray-900 p-6">
+                      {selectedItemId && memberAccounts.find((m) => m.id === selectedItemId) ? (
+                        (() => {
+                          const m = memberAccounts.find((mm) => mm.id === selectedItemId)!;
+                          return (
+                            <div className="space-y-6">
+                              <div className="flex justify-between items-center border-b border-gray-900 pb-3">
+                                <h3 className="font-display text-sm font-black text-white uppercase tracking-wider">
+                                  {m.fullName}
+                                </h3>
+                                <span className="text-[10px] font-mono text-gray-500">{m.email}</span>
+                              </div>
+
+                              <div className="grid grid-cols-2 gap-4">
+                                <div className="flex flex-col gap-1.5">
+                                  <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">
+                                    Monthly Welfare Dues ({m.currency})
+                                  </label>
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    step="0.01"
+                                    value={memberEditDues}
+                                    onChange={(e) => setMemberEditDues(e.target.value)}
+                                    className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold"
+                                  />
+                                </div>
+                                <div className="flex flex-col gap-1.5">
+                                  <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">Status</label>
+                                  <select
+                                    value={memberEditStatus}
+                                    onChange={(e) => setMemberEditStatus(e.target.value as 'active' | 'suspended')}
+                                    className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold cursor-pointer"
+                                  >
+                                    <option value="active">Active</option>
+                                    <option value="suspended">Suspended</option>
+                                  </select>
+                                </div>
+                              </div>
+
+                              <div className="flex flex-col gap-1.5">
+                                <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">
+                                  Reset Password (leave blank to keep current)
+                                </label>
+                                <input
+                                  type="text"
+                                  placeholder="New temporary password"
+                                  value={memberResetPassword}
+                                  onChange={(e) => setMemberResetPassword(e.target.value)}
+                                  className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold"
+                                />
+                              </div>
+
+                              <button
+                                onClick={() => handleSaveMemberEdits(m.id)}
+                                className="px-5 py-2.5 bg-gradient-to-r from-luxury-gold to-luxury-gold-dark text-black font-sans font-black tracking-widest text-[10px] uppercase rounded transition-all shadow-[0_2px_10px_rgba(212,175,55,0.2)] hover:shadow-[0_2px_15px_rgba(212,175,55,0.4)] flex items-center gap-2 cursor-pointer w-fit"
+                              >
+                                <Save className="w-3.5 h-3.5" />
+                                Save Changes
+                              </button>
+
+                              {m.bio && (
+                                <div className="pt-4 border-t border-gray-900">
+                                  <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-500 block mb-1.5">
+                                    Member's Bio (self-edited)
+                                  </label>
+                                  <p className="text-xs text-gray-300 leading-relaxed bg-jet-black border border-gray-900 rounded p-3">{m.bio}</p>
+                                </div>
+                              )}
+
+                              <div className="pt-4 border-t border-gray-900 grid grid-cols-1 md:grid-cols-2 gap-6">
+                                <div>
+                                  <h4 className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-500 mb-2 flex items-center gap-1.5">
+                                    <Wallet className="w-3.5 h-3.5 text-luxury-gold" />
+                                    Welfare Dues History
+                                  </h4>
+                                  {selectedMemberHistoryLoading ? (
+                                    <Loader2 className="w-4 h-4 animate-spin text-luxury-gold/50" />
+                                  ) : selectedMemberDues.length === 0 ? (
+                                    <p className="text-[10px] text-gray-600">No dues payments yet.</p>
+                                  ) : (
+                                    <div className="space-y-1.5 max-h-[220px] overflow-y-auto pr-1">
+                                      {selectedMemberDues.map((d) => (
+                                        <div key={d.id} className="flex items-center justify-between bg-jet-black border border-gray-900 rounded px-2.5 py-2 text-[10px]">
+                                          <span className="text-gray-300">{d.period}</span>
+                                          <span className={`font-black uppercase tracking-wider ${
+                                            d.status === 'success' ? 'text-green-400' : d.status === 'failed' ? 'text-red-400' : 'text-gray-500'
+                                          }`}>
+                                            {d.currency} {d.amount.toFixed(2)} · {d.status}
+                                          </span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+
+                                <div>
+                                  <h4 className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-500 mb-2 flex items-center gap-1.5">
+                                    <Ticket className="w-3.5 h-3.5 text-luxury-gold" />
+                                    Event Payment History
+                                  </h4>
+                                  {selectedMemberHistoryLoading ? (
+                                    <Loader2 className="w-4 h-4 animate-spin text-luxury-gold/50" />
+                                  ) : selectedMemberEventPayments.length === 0 ? (
+                                    <p className="text-[10px] text-gray-600">No event payments yet.</p>
+                                  ) : (
+                                    <div className="space-y-1.5 max-h-[220px] overflow-y-auto pr-1">
+                                      {selectedMemberEventPayments.map((p) => (
+                                        <div key={p.id} className="flex items-center justify-between bg-jet-black border border-gray-900 rounded px-2.5 py-2 text-[10px] gap-2">
+                                          <span className="text-gray-300 truncate">{p.eventTitle}</span>
+                                          <span className={`font-black uppercase tracking-wider shrink-0 ${
+                                            p.status === 'success' ? 'text-green-400' : p.status === 'failed' ? 'text-red-400' : 'text-gray-500'
+                                          }`}>
+                                            {p.currency} {p.amount.toFixed(2)} · {p.status}
+                                          </span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })()
+                      ) : (
+                        <div className="py-24 text-center text-gray-500 text-xs">
+                          <UserCheck className="w-8 h-8 text-luxury-gold/25 mx-auto mb-3" />
+                          Select a member account on the left to view or edit details, or create a new one.
                         </div>
                       )}
                     </div>
