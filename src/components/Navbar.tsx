@@ -1,13 +1,17 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
-import { Award, Menu, X, Flame, LogIn, UserCircle2 } from 'lucide-react';
+import { Award, Menu, X, Flame, LogIn, UserCircle2, Crown } from 'lucide-react';
 import { useCms } from '../context/CmsContext';
 import { useMemberAuth } from '../context/MemberAuthContext';
+
+interface NavbarProps {
+  onOpenJoin: () => void;
+}
 
 // Admin/CMS access was intentionally moved out of the main nav (see Footer's
 // subtle "Staff Login" link) now that this button is a real member portal
 // entry point for regular family members, not the CMS admin gate.
-export default function Navbar() {
+export default function Navbar({ onOpenJoin }: NavbarProps) {
   const [isScrolled, setIsScrolled] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const { hero } = useCms();
@@ -69,7 +73,7 @@ export default function Navbar() {
 
         {/* Desktop Navigation */}
         <div className="hidden md:flex items-center gap-8">
-          {['Who We Are', 'Leadership', 'Events', 'Legacy Gallery', 'Shoutouts'].map((tab) => {
+          {['Who We Are', 'Leadership', 'Events', 'Legacy Gallery'].map((tab) => {
             const id = tab.toLowerCase().replace(/\s+/g, '-');
             return (
               <button
@@ -93,12 +97,13 @@ export default function Navbar() {
           >
             {member ? <UserCircle2 className="w-4 h-4" /> : <LogIn className="w-4 h-4" />}
           </button>
-          
+
           <button
-            onClick={() => scrollToSection('shoutouts')}
-            className="px-5 py-2.5 rounded bg-transparent border border-luxury-gold text-luxury-gold font-sans text-xs font-black tracking-widest uppercase hover:bg-luxury-gold hover:text-black transition-all duration-300 cursor-pointer shadow-[0_0_10px_rgba(212,175,55,0.1)] hover:shadow-[0_0_20px_rgba(212,175,55,0.4)] active:scale-95 animate-pulse"
+            onClick={onOpenJoin}
+            className="px-5 py-2.5 rounded bg-transparent border border-luxury-gold text-luxury-gold font-sans text-xs font-black tracking-widest uppercase hover:bg-luxury-gold hover:text-black transition-all duration-300 cursor-pointer shadow-[0_0_10px_rgba(212,175,55,0.1)] hover:shadow-[0_0_20px_rgba(212,175,55,0.4)] active:scale-95 animate-pulse flex items-center gap-1.5"
           >
-            Leave a Shoutout
+            <Crown className="w-3.5 h-3.5" />
+            Join the Movement
           </button>
         </div>
 
@@ -119,7 +124,7 @@ export default function Navbar() {
           exit={{ opacity: 0, y: -20 }}
           className="absolute top-full left-0 w-full bg-jet-black/98 border-b border-luxury-gold/20 py-6 px-6 flex flex-col gap-5 md:hidden shadow-[0_10px_30px_rgba(0,0,0,0.95)] animate-fade-in"
         >
-          {['Who We Are', 'Leadership', 'Events', 'Legacy Gallery', 'Shoutouts'].map((tab) => {
+          {['Who We Are', 'Leadership', 'Events', 'Legacy Gallery'].map((tab) => {
             const id = tab.toLowerCase().replace(/\s+/g, '-');
             return (
               <button
@@ -145,10 +150,14 @@ export default function Navbar() {
             </button>
 
             <button
-              onClick={() => scrollToSection('shoutouts')}
-              className="w-full text-center py-3 rounded bg-luxury-gold text-black font-sans font-black tracking-widest uppercase hover:bg-luxury-gold-dark transition-all duration-300 shadow-[0_0_15px_rgba(212,175,55,0.2)]"
+              onClick={() => {
+                setMobileMenuOpen(false);
+                onOpenJoin();
+              }}
+              className="w-full text-center py-3 rounded bg-luxury-gold text-black font-sans font-black tracking-widest uppercase hover:bg-luxury-gold-dark transition-all duration-300 shadow-[0_0_15px_rgba(212,175,55,0.2)] flex items-center justify-center gap-2"
             >
-              Leave a Shoutout
+              <Crown className="w-4 h-4" />
+              Join the Movement
             </button>
           </div>
         </motion.div>

@@ -9,28 +9,29 @@ import Hero from './components/Hero';
 import WhoWeAre from './components/WhoWeAre';
 import Leadership from './components/Leadership';
 import Gallery from './components/Gallery';
-import ShoutoutWall from './components/ShoutoutWall';
 import Events from './components/Events';
 import Footer from './components/Footer';
 import CmsDashboard from './components/CmsDashboard';
 import UpcomingEventBanner from './components/UpcomingEventBanner';
 import MemberPortalModal from './components/MemberPortalModal';
+import JoinApplicationModal from './components/JoinApplicationModal';
 import { CmsProvider } from './context/CmsContext';
 import { MemberAuthProvider } from './context/MemberAuthContext';
 
 function AppContent() {
   const [cmsOpen, setCmsOpen] = useState(false);
+  const [joinOpen, setJoinOpen] = useState(false);
 
   return (
     <div className="bg-jet-black min-h-screen text-white font-sans antialiased selection:bg-luxury-gold selection:text-black">
       {/* Sticky Premium Navigation Header */}
-      <Navbar />
+      <Navbar onOpenJoin={() => setJoinOpen(true)} />
 
       {/* Main Container */}
       <main className="relative">
-        
+
         {/* Section 1: Hero Section */}
-        <Hero />
+        <Hero onOpenJoin={() => setJoinOpen(true)} />
 
         {/* Section 2: Who We Are (Core Pillars) */}
         <WhoWeAre />
@@ -44,10 +45,11 @@ function AppContent() {
         {/* Section 5: Legacy Projects Gallery */}
         <Gallery />
 
-        {/* Section 6: Member Shoutout Wall */}
-        <ShoutoutWall />
-
       </main>
+
+      {/* Shared Prospective Member Application modal — opened from both the
+          Navbar's "Join the Movement" button and the Hero's join button. */}
+      <JoinApplicationModal isOpen={joinOpen} onClose={() => setJoinOpen(false)} />
 
       {/* Section 7: Responsive Premium Footer */}
       <Footer onOpenAdmin={() => setCmsOpen(true)} />

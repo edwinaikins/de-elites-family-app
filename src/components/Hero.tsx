@@ -2,10 +2,12 @@ import React from 'react';
 import { motion } from 'motion/react';
 import { Crown, ShieldCheck, Flame, Users } from 'lucide-react';
 import { useCms } from '../context/CmsContext';
-import JoinApplicationModal from './JoinApplicationModal';
 
-export default function Hero() {
-  const [isApplicationOpen, setIsApplicationOpen] = React.useState(false);
+interface HeroProps {
+  onOpenJoin: () => void;
+}
+
+export default function Hero({ onOpenJoin }: HeroProps) {
   const { hero } = useCms();
   const heroItem = hero?.[0] || {
     id: 'hero-config',
@@ -110,7 +112,7 @@ export default function Hero() {
             className="flex flex-col sm:flex-row items-center gap-4 justify-center w-full sm:w-auto"
           >
             <button
-              onClick={() => setIsApplicationOpen(true)}
+              onClick={onOpenJoin}
               className="w-full sm:w-auto px-8 py-4 bg-gradient-to-r from-luxury-gold to-luxury-gold-dark text-black font-sans font-black tracking-widest text-xs uppercase rounded transition-all duration-300 shadow-[0_4px_20px_rgba(212,175,55,0.25)] hover:shadow-[0_0_30px_rgba(212,175,55,0.55)] hover:scale-105 cursor-pointer"
             >
               {heroItem.joinButtonText}
@@ -152,8 +154,6 @@ export default function Hero() {
           </motion.div>
         </motion.div>
       </div>
-
-      <JoinApplicationModal isOpen={isApplicationOpen} onClose={() => setIsApplicationOpen(false)} />
 
     </section>
   );

@@ -69,8 +69,7 @@ export default function Footer({ onOpenAdmin }: FooterProps) {
                 { label: 'Who We Are', id: 'who-we-are' },
                 { label: 'Leadership Council', id: 'leadership' },
                 { label: 'Upcoming Events', id: 'events' },
-                { label: 'Legacy Milestones', id: 'legacy-gallery' },
-                { label: 'Shoutout Wall', id: 'shoutouts' }
+                { label: 'Legacy Milestones', id: 'legacy-gallery' }
               ].map((link, index) => (
                 <li key={index}>
                   <button

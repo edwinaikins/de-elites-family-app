@@ -2,15 +2,19 @@ import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   X, LogIn, LogOut, Crown, User, Wallet, Ticket, AlertCircle,
-  CheckCircle2, Loader2, Save, KeyRound, Calendar,
+  CheckCircle2, Loader2, Save, KeyRound, Calendar, MapPin, Clock,
+  CreditCard, ArrowUpRight,
 } from 'lucide-react';
 import { useMemberAuth } from '../context/MemberAuthContext';
+import { useCms } from '../context/CmsContext';
+import { useEventPayments } from '../hooks/useEventPayments';
 import {
   fetchMyDuesHistory, fetchMyEventPayments, initializeDuesPayment,
   verifyPayment, changeMyPassword,
 } from '../lib/memberClient';
 import { payWithPaystack } from '../lib/paystack';
 import { WelfareDuesPayment, EventPayment } from '../types';
+import { ImageUpload } from './ImageUpload';
 
 type PortalTab = 'profile' | 'dues' | 'events';
 
@@ -34,6 +38,8 @@ function statusBadgeClass(status: string) {
 
 export default function MemberPortalModal() {
   const { member, token, loading, isPortalOpen, closePortal, login, logout, updateBio } = useMemberAuth();
+  const { events } = useCms();
+  const { paidEventIds, payingId, errorById, payForEvent } = useEventPayments();
 
   const [activeTab, setActiveTab] = useState<PortalTab>('profile');
 
@@ -47,6 +53,11 @@ export default function MemberPortalModal() {
   const [bioDraft, setBioDraft] = useState('');
   const [bioSaving, setBioSaving] = useState(false);
   const [bioSaved, setBioSaved] = useState(false);
+
+  // Profile picture upload state
+  const [imageSaving, setImageSaving] = useState(false);
+  const [imageSaved, setImageSaved] = useState(false);
+  const [imageError, setImageError] = useState('');
 
   // Change password state
   const [showPasswordForm, setShowPasswordForm] = useState(false);
@@ -99,6 +110,7 @@ export default function MemberPortalModal() {
     setNewPassword('');
     setPasswordError('');
     setPasswordSuccess(false);
+    setImageError('');
     setActiveTab('profile');
     closePortal();
   };
@@ -132,6 +144,21 @@ export default function MemberPortalModal() {
       // swallow — updateBio already leaves prior state intact on failure
     } finally {
       setBioSaving(false);
+    }
+  };
+
+  const handleImageChange = async (base64: string) => {
+    setImageError('');
+    setImageSaving(true);
+    setImageSaved(false);
+    try {
+      await updateBio({ image: base64 });
+      setImageSaved(true);
+      setTimeout(() => setImageSaved(false), 3000);
+    } catch (err: any) {
+      setImageError(err.message || 'Failed to update your photo.');
+    } finally {
+      setImageSaving(false);
     }
   };
 
@@ -299,7 +326,7 @@ export default function MemberPortalModal() {
                   {[
                     { key: 'profile' as const, label: 'Profile', icon: User },
                     { key: 'dues' as const, label: 'Welfare Dues', icon: Wallet },
-                    { key: 'events' as const, label: 'Event Payments', icon: Ticket },
+                    { key: 'events' as const, label: 'Events', icon: Ticket },
                   ].map((tab) => (
                     <button
                       key={tab.key}
@@ -320,6 +347,34 @@ export default function MemberPortalModal() {
               <div className="p-6 sm:p-8">
                 {activeTab === 'profile' && (
                   <div className="space-y-6">
+                    <div className="flex flex-col gap-1.5">
+                      <ImageUpload
+                        value={member.image || ''}
+                        onChange={handleImageChange}
+                        label="Profile Picture"
+                        description="PNG, JPG or WEBP up to 5MB. Visible to the whole family."
+                        aspectRatio="avatar"
+                      />
+                      <div className="flex items-center justify-end min-h-[14px]">
+                        {imageSaving && (
+                          <span className="text-[10px] text-gray-500 flex items-center gap-1 font-bold uppercase tracking-wider">
+                            <Loader2 className="w-3 h-3 animate-spin" /> Saving
+                          </span>
+                        )}
+                        {imageSaved && (
+                          <span className="text-[10px] text-green-400 flex items-center gap-1 font-bold uppercase tracking-wider">
+                            <CheckCircle2 className="w-3 h-3" /> Saved
+                          </span>
+                        )}
+                      </div>
+                      {imageError && (
+                        <div className="flex items-center gap-2 text-[10px] text-red-500 bg-red-500/10 border border-red-500/20 p-2.5 rounded">
+                          <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                          <span>{imageError}</span>
+                        </div>
+                      )}
+                    </div>
+
                     <div className="flex flex-col gap-1.5">
                       <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">
                         Your Bio
@@ -471,35 +526,116 @@ export default function MemberPortalModal() {
                 )}
 
                 {activeTab === 'events' && (
-                  <div>
-                    <h4 className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-500 mb-3">
-                      Your Paid Event Registrations
-                    </h4>
-                    {eventPaymentsLoading ? (
-                      <div className="py-10 text-center text-gray-500 text-xs flex flex-col items-center gap-2">
-                        <Loader2 className="w-5 h-5 animate-spin text-luxury-gold/50" />
-                        Loading...
-                      </div>
-                    ) : eventPayments.length === 0 ? (
-                      <div className="py-10 text-center text-gray-500 text-xs flex flex-col items-center gap-2">
-                        <Calendar className="w-8 h-8 text-luxury-gold/25" />
-                        No paid event registrations yet. Pay for a paid event from the Upcoming Events section.
-                      </div>
-                    ) : (
-                      <div className="space-y-2">
-                        {eventPayments.map((p) => (
-                          <div key={p.id} className="flex items-center justify-between bg-jet-black border border-gray-900 rounded p-3">
-                            <div className="min-w-0">
-                              <span className="font-sans text-xs font-bold text-white block truncate">{p.eventTitle}</span>
-                              <span className="font-mono text-[10px] text-gray-500">{p.currency} {p.amount.toFixed(2)}</span>
+                  <div className="space-y-8">
+                    <div>
+                      <h4 className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-500 mb-3">
+                        Upcoming Events
+                      </h4>
+                      {events && events.length > 0 ? (
+                        <div className="space-y-3">
+                          {events.map((event) => (
+                            <div key={event.id} className="bg-jet-black border border-gray-900 rounded-lg p-4">
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0">
+                                  <h5 className="font-sans text-sm font-black text-white truncate">{event.title}</h5>
+                                  <div className="mt-1.5 space-y-1 text-[10px] text-gray-500 font-mono">
+                                    <div className="flex items-center gap-1.5">
+                                      <Calendar className="w-3 h-3 text-luxury-gold/70 shrink-0" />
+                                      <span>{event.date}</span>
+                                      {event.time && (
+                                        <>
+                                          <Clock className="w-3 h-3 text-luxury-gold/70 shrink-0 ml-2" />
+                                          <span>{event.time}</span>
+                                        </>
+                                      )}
+                                    </div>
+                                    {event.location && (
+                                      <div className="flex items-center gap-1.5">
+                                        <MapPin className="w-3 h-3 text-luxury-gold/70 shrink-0" />
+                                        <span className="truncate">{event.location}</span>
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+
+                              {errorById[event.id] && (
+                                <div className="flex items-center gap-1.5 text-[10px] text-red-500 bg-red-500/10 border border-red-500/20 p-2 rounded mt-3">
+                                  <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                                  <span>{errorById[event.id]}</span>
+                                </div>
+                              )}
+
+                              <div className="mt-3">
+                                {event.price && event.price > 0 ? (
+                                  paidEventIds.has(event.id) ? (
+                                    <div className="w-full py-2.5 rounded bg-green-950/20 border border-green-900/40 text-green-400 font-sans font-black tracking-widest text-[10px] uppercase flex items-center justify-center gap-2">
+                                      <CheckCircle2 className="w-3.5 h-3.5" />
+                                      Registered
+                                    </div>
+                                  ) : (
+                                    <button
+                                      onClick={() => payForEvent(event.id)}
+                                      disabled={payingId === event.id}
+                                      className="w-full py-2.5 rounded bg-gradient-to-r from-luxury-gold to-luxury-gold-dark text-black font-sans font-black tracking-widest text-[10px] uppercase transition-all shadow-[0_2px_10px_rgba(212,175,55,0.2)] cursor-pointer flex items-center justify-center gap-2 disabled:opacity-60"
+                                    >
+                                      {payingId === event.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CreditCard className="w-3.5 h-3.5" />}
+                                      Pay &amp; Register — {event.currency || 'GHS'} {event.price.toFixed(2)}
+                                    </button>
+                                  )
+                                ) : event.buttonLink ? (
+                                  <a
+                                    href={event.buttonLink}
+                                    target={event.buttonLink.startsWith('#') ? undefined : '_blank'}
+                                    rel={event.buttonLink.startsWith('#') ? undefined : 'noopener noreferrer'}
+                                    className="w-full py-2.5 rounded bg-charcoal-card border border-gray-800 hover:border-luxury-gold text-white hover:text-luxury-gold font-sans font-black tracking-widest text-[10px] uppercase transition-all duration-300 cursor-pointer flex items-center justify-center gap-2"
+                                  >
+                                    {event.buttonText || 'Register'}
+                                    <ArrowUpRight className="w-3.5 h-3.5" />
+                                  </a>
+                                ) : null}
+                              </div>
                             </div>
-                            <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded border shrink-0 ml-3 ${statusBadgeClass(p.status)}`}>
-                              {p.status}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="py-10 text-center text-gray-500 text-xs flex flex-col items-center gap-2 bg-jet-black border border-gray-900 rounded-lg">
+                          <Calendar className="w-8 h-8 text-luxury-gold/25" />
+                          No upcoming events scheduled right now.
+                        </div>
+                      )}
+                    </div>
+
+                    <div>
+                      <h4 className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-500 mb-3">
+                        Your Paid Event Registrations
+                      </h4>
+                      {eventPaymentsLoading ? (
+                        <div className="py-10 text-center text-gray-500 text-xs flex flex-col items-center gap-2">
+                          <Loader2 className="w-5 h-5 animate-spin text-luxury-gold/50" />
+                          Loading...
+                        </div>
+                      ) : eventPayments.length === 0 ? (
+                        <div className="py-10 text-center text-gray-500 text-xs flex flex-col items-center gap-2">
+                          <Calendar className="w-8 h-8 text-luxury-gold/25" />
+                          No paid event registrations yet. Pay for a paid event above to see it here.
+                        </div>
+                      ) : (
+                        <div className="space-y-2">
+                          {eventPayments.map((p) => (
+                            <div key={p.id} className="flex items-center justify-between bg-jet-black border border-gray-900 rounded p-3">
+                              <div className="min-w-0">
+                                <span className="font-sans text-xs font-bold text-white block truncate">{p.eventTitle}</span>
+                                <span className="font-mono text-[10px] text-gray-500">{p.currency} {p.amount.toFixed(2)}</span>
+                              </div>
+                              <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded border shrink-0 ml-3 ${statusBadgeClass(p.status)}`}>
+                                {p.status}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>
