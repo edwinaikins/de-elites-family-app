@@ -5,15 +5,15 @@ import {
   RefreshCw, Heart, ShieldCheck, Users, Flame,
   Award, Compass, Image, Calendar,
   X, Check, RotateCcw, MessageSquare, AlertCircle, LogOut,
-  UserCheck, Loader2, Mail, Phone, Wallet, Ticket, UserPlus
+  UserCheck, Loader2, Mail, Phone, Wallet, Ticket, UserPlus, Download
 } from 'lucide-react';
 import { useCms } from '../context/CmsContext';
 import { ImageUpload } from './ImageUpload';
-import { Pillar, Leader, GalleryItem, Shoutout, EliteEvent, HeroConfig, CmsUser, MemberApplication, MemberAccount, WelfareDuesPayment, EventPayment } from '../types';
+import { Pillar, Leader, GalleryItem, Shoutout, EliteEvent, HeroConfig, CmsUser, MemberApplication, MemberAccount, WelfareDuesPayment, EventPayment, AdminPaymentRecord } from '../types';
 import { fetchMemberApplications, updateMemberApplicationStatus, deleteMemberApplication } from '../lib/cmsClient';
 import {
   fetchAllMemberAccounts, createMemberAccount, updateMemberAccount, deleteMemberAccount,
-  fetchMemberDuesHistoryAdmin, fetchMemberEventPaymentsAdmin,
+  fetchMemberDuesHistoryAdmin, fetchMemberEventPaymentsAdmin, fetchAllPaymentsAdmin,
 } from '../lib/memberClient';
 
 interface CmsDashboardProps {
@@ -21,7 +21,27 @@ interface CmsDashboardProps {
   onClose: () => void;
 }
 
-type TabType = 'pillars' | 'leaders' | 'gallery' | 'shoutouts' | 'events' | 'hero' | 'users' | 'applications' | 'memberAccounts';
+type TabType = 'pillars' | 'leaders' | 'gallery' | 'shoutouts' | 'events' | 'hero' | 'users' | 'applications' | 'memberAccounts' | 'payments';
+
+function formatPeriodLabel(period: string): string {
+  const [year, month] = period.split('-').map(Number);
+  if (!year || !month) return period;
+  const d = new Date(year, month - 1, 1);
+  return d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+}
+
+function statusBadgeClass(status: string) {
+  if (status === 'success') return 'bg-green-950/40 text-green-400 border-green-900/40';
+  if (status === 'failed') return 'bg-red-950/40 text-red-400 border-red-900/40';
+  return 'bg-gray-800/60 text-gray-400 border-gray-700/40';
+}
+
+function formatChannel(channel?: string): string {
+  if (!channel) return '—';
+  if (channel === 'mobile_money') return 'Mobile Money';
+  if (channel === 'bank_transfer') return 'Bank Transfer';
+  return channel.charAt(0).toUpperCase() + channel.slice(1);
+}
 
 export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
   const {
@@ -70,6 +90,17 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
   const [memberEditDues, setMemberEditDues] = useState('');
   const [memberEditStatus, setMemberEditStatus] = useState<'active' | 'suspended'>('active');
   const [memberResetPassword, setMemberResetPassword] = useState('');
+
+  // Reconciliation: every dues + event payment across every member ("who
+  // paid what"), fetched once when the tab opens and filtered/sorted
+  // client-side since the dataset is small enough not to need server-side
+  // pagination.
+  const [payments, setPayments] = useState<AdminPaymentRecord[]>([]);
+  const [paymentsLoading, setPaymentsLoading] = useState(false);
+  const [paymentsError, setPaymentsError] = useState<string | null>(null);
+  const [paymentsSearch, setPaymentsSearch] = useState('');
+  const [paymentsTypeFilter, setPaymentsTypeFilter] = useState<'all' | 'dues' | 'event'>('all');
+  const [paymentsStatusFilter, setPaymentsStatusFilter] = useState<'all' | 'success' | 'pending' | 'failed'>('all');
 
   // Track currently active item for editing or "new" state
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
@@ -136,6 +167,67 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
       loadMemberAccounts();
     }
   }, [isOpen, activeTab, loadMemberAccounts]);
+
+  // Load the reconciliation payments list when that tab is opened
+  React.useEffect(() => {
+    if (isOpen && activeTab === 'payments') {
+      setPaymentsLoading(true);
+      setPaymentsError(null);
+      fetchAllPaymentsAdmin()
+        .then(setPayments)
+        .catch((err: any) => setPaymentsError(err.message || 'Failed to load payments'))
+        .finally(() => setPaymentsLoading(false));
+    }
+  }, [isOpen, activeTab]);
+
+  const filteredPayments = React.useMemo(() => {
+    const search = paymentsSearch.trim().toLowerCase();
+    return payments.filter((p) => {
+      if (paymentsTypeFilter !== 'all' && p.type !== paymentsTypeFilter) return false;
+      if (paymentsStatusFilter !== 'all' && p.status !== paymentsStatusFilter) return false;
+      if (search) {
+        const haystack = `${p.memberName} ${p.memberEmail} ${p.label} ${p.reference}`.toLowerCase();
+        if (!haystack.includes(search)) return false;
+      }
+      return true;
+    });
+  }, [payments, paymentsTypeFilter, paymentsStatusFilter, paymentsSearch]);
+
+  const paymentsTotalsByCurrency = React.useMemo(() => {
+    const totals: Record<string, number> = {};
+    for (const p of filteredPayments) {
+      if (p.status !== 'success') continue;
+      totals[p.currency] = (totals[p.currency] || 0) + p.amount;
+    }
+    return totals;
+  }, [filteredPayments]);
+
+  const handleExportPaymentsCsv = () => {
+    const header = ['Date', 'Member Name', 'Member Email', 'Type', 'Details', 'Amount', 'Currency', 'Channel', 'Status', 'Reference'];
+    const escapeCsv = (value: string) => `"${value.replace(/"/g, '""')}"`;
+    const rows = filteredPayments.map((p) => [
+      new Date(p.createdAt).toISOString(),
+      p.memberName,
+      p.memberEmail,
+      p.type,
+      p.label,
+      p.amount.toFixed(2),
+      p.currency,
+      p.channel || '',
+      p.status,
+      p.reference,
+    ].map((v) => escapeCsv(String(v))).join(','));
+    const csv = [header.map(escapeCsv).join(','), ...rows].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `de-elites-payments-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
 
   // Load the selected member's payment history + hydrate the edit form
   React.useEffect(() => {
@@ -656,7 +748,8 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                 { type: 'hero', label: '6. Hero & Branding', count: localHero.length, desc: 'Title, Logo & Stats' },
                 { type: 'users', label: '7. User Accounts', count: localUsers.length, desc: 'Manage CMS Users' },
                 { type: 'applications', label: '8. Applications', count: applications.length, desc: 'Prospective Members' },
-                { type: 'memberAccounts', label: '9. Member Accounts', count: memberAccounts.length, desc: 'Portal Logins & Dues' }
+                { type: 'memberAccounts', label: '9. Member Accounts', count: memberAccounts.length, desc: 'Portal Logins & Dues' },
+                { type: 'payments', label: '10. Payments', count: payments.length, desc: 'Reconciliation & Exports' }
               ].map((item) => (
                 <button
                   key={item.type}
@@ -2322,6 +2415,148 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                     </div>
 
                   </div>
+                </div>
+              )}
+
+              {/* PAYMENTS RECONCILIATION MODULE VIEW */}
+              {activeTab === 'payments' && (
+                <div className="flex-1 overflow-y-auto max-w-6xl w-full mx-auto space-y-6">
+                  {paymentsError && (
+                    <div className="flex items-center gap-2 text-xs text-red-500 bg-red-500/10 border border-red-500/20 p-3 rounded">
+                      <AlertCircle className="w-4 h-4 shrink-0" />
+                      <span>{paymentsError}</span>
+                    </div>
+                  )}
+
+                  <div>
+                    <h4 className="font-display text-xs font-black text-luxury-gold uppercase tracking-widest mb-1">
+                      Payments ({filteredPayments.length}{filteredPayments.length !== payments.length ? ` of ${payments.length}` : ''})
+                    </h4>
+                    <p className="text-[10px] text-gray-500 font-sans">
+                      Every welfare dues and event payment across every member, newest first — for reconciling who paid what (including partial dues payments).
+                    </p>
+                  </div>
+
+                  {/* Filters + export */}
+                  <div className="bg-charcoal-card rounded-lg border border-gray-900 p-4 flex flex-wrap items-end gap-3">
+                    <div className="flex-1 min-w-[180px]">
+                      <label className="font-sans text-[9px] font-black uppercase tracking-widest text-gray-500 block mb-1">Search</label>
+                      <input
+                        type="text"
+                        placeholder="Member name, email, period, event..."
+                        value={paymentsSearch}
+                        onChange={(e) => setPaymentsSearch(e.target.value)}
+                        className="w-full bg-jet-black border border-gray-800 rounded px-3 py-2 text-xs text-white focus:outline-none focus:border-luxury-gold"
+                      />
+                    </div>
+                    <div>
+                      <label className="font-sans text-[9px] font-black uppercase tracking-widest text-gray-500 block mb-1">Type</label>
+                      <select
+                        value={paymentsTypeFilter}
+                        onChange={(e) => setPaymentsTypeFilter(e.target.value as 'all' | 'dues' | 'event')}
+                        className="bg-jet-black border border-gray-800 rounded px-3 py-2 text-xs text-white focus:outline-none focus:border-luxury-gold cursor-pointer"
+                      >
+                        <option value="all">All</option>
+                        <option value="dues">Dues</option>
+                        <option value="event">Events</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="font-sans text-[9px] font-black uppercase tracking-widest text-gray-500 block mb-1">Status</label>
+                      <select
+                        value={paymentsStatusFilter}
+                        onChange={(e) => setPaymentsStatusFilter(e.target.value as 'all' | 'success' | 'pending' | 'failed')}
+                        className="bg-jet-black border border-gray-800 rounded px-3 py-2 text-xs text-white focus:outline-none focus:border-luxury-gold cursor-pointer"
+                      >
+                        <option value="all">All</option>
+                        <option value="success">Success</option>
+                        <option value="pending">Pending</option>
+                        <option value="failed">Failed</option>
+                      </select>
+                    </div>
+                    <button
+                      onClick={handleExportPaymentsCsv}
+                      disabled={filteredPayments.length === 0}
+                      className="px-4 py-2 rounded bg-luxury-gold hover:bg-luxury-gold-dark text-black font-sans font-black tracking-widest text-[10px] uppercase transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      Download CSV
+                    </button>
+                  </div>
+
+                  {/* Totals */}
+                  {Object.keys(paymentsTotalsByCurrency).length > 0 && (
+                    <div className="flex flex-wrap gap-2">
+                      {Object.entries(paymentsTotalsByCurrency).map(([currency, total]) => (
+                        <span
+                          key={currency}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-green-950/20 border border-green-900/40 text-green-400 text-[10px] font-mono font-bold"
+                        >
+                          Collected: {currency} {total.toFixed(2)}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Table */}
+                  {paymentsLoading ? (
+                    <div className="py-16 text-center text-gray-500 text-xs flex flex-col items-center gap-2">
+                      <Loader2 className="w-6 h-6 animate-spin text-luxury-gold/50" />
+                      Loading payments...
+                    </div>
+                  ) : filteredPayments.length === 0 ? (
+                    <div className="py-16 text-center text-gray-500 text-xs">
+                      {payments.length === 0 ? 'No payments recorded yet.' : 'No payments match the current filters.'}
+                    </div>
+                  ) : (
+                    <div className="bg-charcoal-card rounded-lg border border-gray-900 overflow-x-auto">
+                      <table className="w-full text-left text-xs min-w-[820px]">
+                        <thead>
+                          <tr className="border-b border-gray-900 text-[9px] font-black uppercase tracking-widest text-gray-500">
+                            <th className="px-4 py-3">Date</th>
+                            <th className="px-4 py-3">Member</th>
+                            <th className="px-4 py-3">Type</th>
+                            <th className="px-4 py-3">Details</th>
+                            <th className="px-4 py-3">Channel</th>
+                            <th className="px-4 py-3 text-right">Amount</th>
+                            <th className="px-4 py-3 text-right">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {filteredPayments.map((p) => (
+                            <tr key={`${p.type}-${p.id}`} className="border-b border-gray-900/60 hover:bg-jet-black/60 transition-colors">
+                              <td className="px-4 py-3 font-mono text-[10px] text-gray-500 whitespace-nowrap">
+                                {new Date(p.createdAt).toLocaleDateString()}
+                              </td>
+                              <td className="px-4 py-3 min-w-0">
+                                <span className="font-sans font-bold text-white block truncate max-w-[160px]">{p.memberName}</span>
+                                <span className="font-sans text-[10px] text-gray-500 block truncate max-w-[160px]">{p.memberEmail}</span>
+                              </td>
+                              <td className="px-4 py-3">
+                                <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded border ${
+                                  p.type === 'dues' ? 'bg-luxury-gold/10 text-luxury-gold border-luxury-gold/20' : 'bg-blue-950/30 text-blue-400 border-blue-900/40'
+                                }`}>
+                                  {p.type}
+                                </span>
+                              </td>
+                              <td className="px-4 py-3 text-gray-300 max-w-[180px] truncate">
+                                {p.type === 'dues' ? formatPeriodLabel(p.label) : p.label}
+                              </td>
+                              <td className="px-4 py-3 text-gray-400 text-[10px]">{formatChannel(p.channel)}</td>
+                              <td className="px-4 py-3 text-right font-mono text-gray-200 whitespace-nowrap">
+                                {p.currency} {p.amount.toFixed(2)}
+                              </td>
+                              <td className="px-4 py-3 text-right">
+                                <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded border ${statusBadgeClass(p.status)}`}>
+                                  {p.status}
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
                 </div>
               )}
 

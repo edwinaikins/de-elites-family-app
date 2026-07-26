@@ -1,4 +1,4 @@
-import { MemberAccount, MemberProfileUpdate, WelfareDuesPayment, EventPayment, PaymentInitResponse } from '../types';
+import { MemberAccount, MemberProfileUpdate, WelfareDuesPayment, EventPayment, PaymentInitResponse, DuesBalance, AdminPaymentRecord } from '../types';
 
 async function handleJson<T>(res: Response): Promise<T> {
   const result = await res.json().catch(() => ({}));
@@ -57,12 +57,21 @@ export async function fetchMyEventPayments(token: string): Promise<EventPayment[
   return handleJson(res);
 }
 
-export async function initializeDuesPayment(token: string, period: string): Promise<PaymentInitResponse> {
+// `amount` is optional — omit it (or leave undefined) to pay off the full
+// remaining balance for the period; pass a smaller number to make a
+// partial/installment payment. The server re-validates it against what's
+// actually still owed either way.
+export async function initializeDuesPayment(token: string, period: string, amount?: number): Promise<PaymentInitResponse> {
   const res = await fetch('/api/payments/dues/initialize', {
     method: 'POST',
     headers: authHeaders(token),
-    body: JSON.stringify({ period }),
+    body: JSON.stringify({ period, amount }),
   });
+  return handleJson(res);
+}
+
+export async function fetchMyDuesBalance(token: string, period: string): Promise<DuesBalance> {
+  const res = await fetch(`/api/member/dues-balance/${encodeURIComponent(period)}`, { headers: authHeaders(token) });
   return handleJson(res);
 }
 
@@ -75,11 +84,15 @@ export async function initializeEventPayment(token: string, eventId: string): Pr
   return handleJson(res);
 }
 
-export async function verifyPayment(token: string, reference: string): Promise<{ type: 'dues' | 'event' }> {
+// `channel` (e.g. "card" / "mobile_money") is only ever honored by the
+// server for mock payments — for real payments the channel always comes
+// from Paystack's own verify response, so passing it here for a real
+// payment is simply ignored server-side.
+export async function verifyPayment(token: string, reference: string, channel?: string): Promise<{ type: 'dues' | 'event' }> {
   const res = await fetch('/api/payments/verify', {
     method: 'POST',
     headers: authHeaders(token),
-    body: JSON.stringify({ reference }),
+    body: JSON.stringify({ reference, channel }),
   });
   const result = await res.json().catch(() => ({}));
   if (!res.ok || !result.success) {
@@ -136,5 +149,12 @@ export async function fetchMemberDuesHistoryAdmin(id: string): Promise<WelfareDu
 
 export async function fetchMemberEventPaymentsAdmin(id: string): Promise<EventPayment[]> {
   const res = await fetch(`/api/admin/members/${encodeURIComponent(id)}/event-payments`);
+  return handleJson(res);
+}
+
+// --- Admin: reconciliation ---
+
+export async function fetchAllPaymentsAdmin(): Promise<AdminPaymentRecord[]> {
+  const res = await fetch('/api/admin/payments');
   return handleJson(res);
 }

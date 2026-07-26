@@ -14,7 +14,7 @@ export interface MockCheckoutRequest {
 }
 
 export interface MockCheckoutHandle extends MockCheckoutRequest {
-  resolve: (response: { reference: string }) => void;
+  resolve: (response: { reference: string; channel: 'card' | 'mobile_money' }) => void;
   reject: (error: Error) => void;
 }
 
@@ -31,7 +31,7 @@ export function registerMockCheckoutListener(fn: Listener): () => void {
   };
 }
 
-export function openMockCheckout(request: MockCheckoutRequest): Promise<{ reference: string }> {
+export function openMockCheckout(request: MockCheckoutRequest): Promise<{ reference: string; channel: 'card' | 'mobile_money' }> {
   return new Promise((resolve, reject) => {
     if (!activeListener) {
       reject(new Error('Mock payment UI is not mounted. Please reload the page and try again.'));

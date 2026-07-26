@@ -33,6 +33,7 @@ declare global {
         currency?: string;
         ref: string;
         metadata?: Record<string, any>;
+        channels?: string[];
         callback: (response: { reference: string }) => void;
         onClose: () => void;
       }) => { openIframe: () => void };
@@ -54,7 +55,7 @@ export function isPaystackReady(): boolean {
   return typeof window !== 'undefined' && !!window.PaystackPop;
 }
 
-export function payWithPaystack(params: PayWithPaystackParams): Promise<{ reference: string }> {
+export function payWithPaystack(params: PayWithPaystackParams): Promise<{ reference: string; channel?: string }> {
   if (params.mock || params.publicKey === 'mock') {
     return openMockCheckout({
       amount: params.amount,
@@ -77,6 +78,12 @@ export function payWithPaystack(params: PayWithPaystackParams): Promise<{ refere
       currency: params.currency,
       ref: params.reference,
       metadata: params.metadata,
+      // Explicitly offer Mobile Money alongside cards (and the other
+      // channels Paystack supports) instead of relying on whatever's
+      // enabled in the dashboard's default channel list. The channel the
+      // member actually used is read back from Paystack's own verify
+      // response server-side — never trusted from this popup.
+      channels: ['card', 'mobile_money', 'bank', 'bank_transfer', 'ussd'],
       callback: (response) => {
         resolve({ reference: response.reference });
       },

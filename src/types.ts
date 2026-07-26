@@ -142,9 +142,15 @@ export interface WelfareDuesPayment {
   amount: number;
   currency: string;
   // The dues period this payment covers, e.g. "2026-08" for August 2026.
+  // A period can have more than one successful payment row against it —
+  // members are allowed to pay it off in installments (see DuesBalance).
   period: string;
   reference: string;
   status: PaymentStatus;
+  // How the payment cleared — "card", "mobile_money", etc. Set once the
+  // payment succeeds (real payments: from Paystack's verify response; mock
+  // payments: whichever tab was used in the simulated checkout).
+  channel?: string;
   paidAt?: string;
   createdAt: string;
 }
@@ -156,6 +162,37 @@ export interface EventPayment {
   eventTitle: string;
   amount: number;
   currency: string;
+  reference: string;
+  status: PaymentStatus;
+  channel?: string;
+  paidAt?: string;
+  createdAt: string;
+}
+
+// GET /api/member/dues-balance/:period — how much of the configured monthly
+// dues amount a member has already paid off for one period, so the portal
+// can show "GHS 20 of GHS 50 paid" and cap what they can still pay.
+export interface DuesBalance {
+  period: string;
+  duesAmount: number;
+  paid: number;
+  remaining: number;
+  currency: string;
+}
+
+// GET /api/admin/payments — one flattened, reconcilable row per dues or
+// event payment across every member, used by the CMS's Payments tab.
+export interface AdminPaymentRecord {
+  id: string;
+  type: 'dues' | 'event';
+  memberId: string;
+  memberName: string;
+  memberEmail: string;
+  // Dues period (e.g. "2026-08") for type 'dues', event title for type 'event'.
+  label: string;
+  amount: number;
+  currency: string;
+  channel?: string;
   reference: string;
   status: PaymentStatus;
   paidAt?: string;

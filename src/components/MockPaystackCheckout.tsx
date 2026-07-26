@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { CreditCard, Lock, X, Loader2, CheckCircle2 } from 'lucide-react';
+import { CreditCard, Smartphone, Lock, X, Loader2, CheckCircle2 } from 'lucide-react';
 import { registerMockCheckoutListener, MockCheckoutHandle } from '../lib/mockPaystackStore';
 
 // Simulated Paystack Inline checkout, shown instead of the real popup
@@ -9,21 +9,34 @@ import { registerMockCheckoutListener, MockCheckoutHandle } from '../lib/mockPay
 // it just awaits a promise that resolves/rejects the same way the real
 // Paystack popup would.
 type Stage = 'form' | 'processing' | 'success';
+type Channel = 'card' | 'mobile_money';
+
+const MOMO_NETWORKS = ['MTN Mobile Money', 'Vodafone Cash', 'AirtelTigo Money'];
 
 export default function MockPaystackCheckout() {
   const [request, setRequest] = useState<MockCheckoutHandle | null>(null);
   const [stage, setStage] = useState<Stage>('form');
+  const [channel, setChannel] = useState<Channel>('card');
+
+  // Card fields
   const [cardNumber, setCardNumber] = useState('4084 0840 8408 4081');
   const [expiry, setExpiry] = useState('12/29');
   const [cvv, setCvv] = useState('408');
+
+  // Mobile money fields
+  const [network, setNetwork] = useState(MOMO_NETWORKS[0]);
+  const [phone, setPhone] = useState('024 000 0000');
 
   useEffect(() => {
     return registerMockCheckoutListener((req) => {
       setRequest(req);
       setStage('form');
+      setChannel('card');
       setCardNumber('4084 0840 8408 4081');
       setExpiry('12/29');
       setCvv('408');
+      setNetwork(MOMO_NETWORKS[0]);
+      setPhone('024 000 0000');
     });
   }, []);
 
@@ -35,7 +48,11 @@ export default function MockPaystackCheckout() {
   };
 
   const handleDecline = () => {
-    request.reject(new Error('Your card was declined (simulated failure).'));
+    const message =
+      channel === 'mobile_money'
+        ? 'Mobile money authorization was declined (simulated failure).'
+        : 'Your card was declined (simulated failure).';
+    request.reject(new Error(message));
     setRequest(null);
   };
 
@@ -44,7 +61,7 @@ export default function MockPaystackCheckout() {
     setTimeout(() => {
       setStage('success');
       setTimeout(() => {
-        request.resolve({ reference: request.reference });
+        request.resolve({ reference: request.reference, channel });
         setRequest(null);
       }, 900);
     }, 1300);
@@ -81,37 +98,90 @@ export default function MockPaystackCheckout() {
                 <p className="text-[10px] text-gray-500 mt-1">{request.email}</p>
               </div>
 
-              <div className="space-y-4">
-                <div>
-                  <label className="text-[10px] text-gray-400 uppercase font-bold tracking-wider">Card Number</label>
-                  <div className="mt-1 flex items-center gap-2 bg-[#161616] border border-gray-800 rounded px-3 py-2.5">
-                    <CreditCard className="w-4 h-4 text-gray-500 shrink-0" />
-                    <input
-                      value={cardNumber}
-                      onChange={(e) => setCardNumber(e.target.value)}
-                      className="bg-transparent text-white text-sm flex-1 focus:outline-none font-mono min-w-0"
-                    />
-                  </div>
-                </div>
-                <div className="flex gap-3">
-                  <div className="flex-1">
-                    <label className="text-[10px] text-gray-400 uppercase font-bold tracking-wider">Expiry</label>
-                    <input
-                      value={expiry}
-                      onChange={(e) => setExpiry(e.target.value)}
-                      className="mt-1 w-full bg-[#161616] border border-gray-800 rounded px-3 py-2.5 text-white text-sm focus:outline-none font-mono"
-                    />
-                  </div>
-                  <div className="flex-1">
-                    <label className="text-[10px] text-gray-400 uppercase font-bold tracking-wider">CVV</label>
-                    <input
-                      value={cvv}
-                      onChange={(e) => setCvv(e.target.value)}
-                      className="mt-1 w-full bg-[#161616] border border-gray-800 rounded px-3 py-2.5 text-white text-sm focus:outline-none font-mono"
-                    />
-                  </div>
-                </div>
+              {/* Channel switcher */}
+              <div className="flex rounded border border-gray-800 overflow-hidden mb-5">
+                <button
+                  onClick={() => setChannel('card')}
+                  className={`flex-1 py-2.5 flex items-center justify-center gap-1.5 text-[10px] font-black uppercase tracking-wider transition-colors cursor-pointer ${
+                    channel === 'card' ? 'bg-[#00C3F9] text-[#011B33]' : 'bg-[#161616] text-gray-400 hover:text-white'
+                  }`}
+                >
+                  <CreditCard className="w-3.5 h-3.5" />
+                  Card
+                </button>
+                <button
+                  onClick={() => setChannel('mobile_money')}
+                  className={`flex-1 py-2.5 flex items-center justify-center gap-1.5 text-[10px] font-black uppercase tracking-wider transition-colors cursor-pointer ${
+                    channel === 'mobile_money' ? 'bg-[#00C3F9] text-[#011B33]' : 'bg-[#161616] text-gray-400 hover:text-white'
+                  }`}
+                >
+                  <Smartphone className="w-3.5 h-3.5" />
+                  Mobile Money
+                </button>
               </div>
+
+              {channel === 'card' ? (
+                <div className="space-y-4">
+                  <div>
+                    <label className="text-[10px] text-gray-400 uppercase font-bold tracking-wider">Card Number</label>
+                    <div className="mt-1 flex items-center gap-2 bg-[#161616] border border-gray-800 rounded px-3 py-2.5">
+                      <CreditCard className="w-4 h-4 text-gray-500 shrink-0" />
+                      <input
+                        value={cardNumber}
+                        onChange={(e) => setCardNumber(e.target.value)}
+                        className="bg-transparent text-white text-sm flex-1 focus:outline-none font-mono min-w-0"
+                      />
+                    </div>
+                  </div>
+                  <div className="flex gap-3">
+                    <div className="flex-1">
+                      <label className="text-[10px] text-gray-400 uppercase font-bold tracking-wider">Expiry</label>
+                      <input
+                        value={expiry}
+                        onChange={(e) => setExpiry(e.target.value)}
+                        className="mt-1 w-full bg-[#161616] border border-gray-800 rounded px-3 py-2.5 text-white text-sm focus:outline-none font-mono"
+                      />
+                    </div>
+                    <div className="flex-1">
+                      <label className="text-[10px] text-gray-400 uppercase font-bold tracking-wider">CVV</label>
+                      <input
+                        value={cvv}
+                        onChange={(e) => setCvv(e.target.value)}
+                        className="mt-1 w-full bg-[#161616] border border-gray-800 rounded px-3 py-2.5 text-white text-sm focus:outline-none font-mono"
+                      />
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div>
+                    <label className="text-[10px] text-gray-400 uppercase font-bold tracking-wider">Network</label>
+                    <select
+                      value={network}
+                      onChange={(e) => setNetwork(e.target.value)}
+                      className="mt-1 w-full bg-[#161616] border border-gray-800 rounded px-3 py-2.5 text-white text-sm focus:outline-none cursor-pointer"
+                    >
+                      {MOMO_NETWORKS.map((n) => (
+                        <option key={n} value={n}>{n}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-gray-400 uppercase font-bold tracking-wider">Mobile Money Number</label>
+                    <div className="mt-1 flex items-center gap-2 bg-[#161616] border border-gray-800 rounded px-3 py-2.5">
+                      <Smartphone className="w-4 h-4 text-gray-500 shrink-0" />
+                      <input
+                        value={phone}
+                        onChange={(e) => setPhone(e.target.value)}
+                        className="bg-transparent text-white text-sm flex-1 focus:outline-none font-mono min-w-0"
+                      />
+                    </div>
+                  </div>
+                  <p className="text-[9px] text-gray-600 leading-relaxed">
+                    A prompt would normally be sent to this number to approve the charge on {network}.
+                  </p>
+                </div>
+              )}
 
               <button
                 onClick={handlePay}
@@ -125,11 +195,11 @@ export default function MockPaystackCheckout() {
                 onClick={handleDecline}
                 className="w-full mt-2 py-2 text-[10px] text-gray-600 hover:text-red-400 uppercase font-bold tracking-widest transition-colors cursor-pointer"
               >
-                Simulate Declined Card
+                {channel === 'mobile_money' ? 'Simulate Declined Authorization' : 'Simulate Declined Card'}
               </button>
 
               <p className="mt-4 text-center text-[9px] text-gray-600 leading-relaxed">
-                Simulated checkout — no real Paystack account is configured. No money moves and any card details entered are ignored.
+                Simulated checkout — no real Paystack account is configured. No money moves and any details entered are ignored.
               </p>
             </>
           )}
@@ -137,7 +207,9 @@ export default function MockPaystackCheckout() {
           {stage === 'processing' && (
             <div className="py-10 flex flex-col items-center gap-3">
               <Loader2 className="w-8 h-8 text-luxury-gold animate-spin" />
-              <span className="text-gray-400 text-xs uppercase tracking-widest font-bold">Processing Payment...</span>
+              <span className="text-gray-400 text-xs uppercase tracking-widest font-bold">
+                {channel === 'mobile_money' ? 'Waiting for Mobile Money Approval...' : 'Processing Payment...'}
+              </span>
             </div>
           )}
 

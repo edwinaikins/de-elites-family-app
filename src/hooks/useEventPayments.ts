@@ -39,15 +39,16 @@ export function useEventPayments() {
       setPayingId(eventId);
       try {
         const init = await initializeEventPayment(token, eventId);
-        const { reference } = await payWithPaystack({
+        const { reference, channel } = await payWithPaystack({
           publicKey: init.publicKey,
           email: init.email,
           amount: init.amount,
           currency: init.currency,
           reference: init.reference,
           metadata: { type: 'event', eventId },
+          mock: init.mock,
         });
-        await verifyPayment(token, reference);
+        await verifyPayment(token, reference, channel);
         setPaidEventIds((prev) => new Set(prev).add(eventId));
       } catch (err: any) {
         setErrorById((prev) => ({ ...prev, [eventId]: err.message || 'Payment could not be completed.' }));

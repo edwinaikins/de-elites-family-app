@@ -10,11 +10,11 @@ import { useCms } from '../context/CmsContext';
 import { useEventPayments } from '../hooks/useEventPayments';
 import { usePaymentsConfig } from '../hooks/usePaymentsConfig';
 import {
-  fetchMyDuesHistory, fetchMyEventPayments, initializeDuesPayment,
+  fetchMyDuesHistory, fetchMyEventPayments, fetchMyDuesBalance, initializeDuesPayment,
   verifyPayment, changeMyPassword,
 } from '../lib/memberClient';
 import { payWithPaystack } from '../lib/paystack';
-import { WelfareDuesPayment, EventPayment } from '../types';
+import { WelfareDuesPayment, EventPayment, DuesBalance } from '../types';
 import { ImageUpload } from './ImageUpload';
 
 type PortalTab = 'profile' | 'dues' | 'events';
@@ -35,6 +35,13 @@ function statusBadgeClass(status: string) {
   if (status === 'success') return 'bg-green-950/40 text-green-400 border-green-900/40';
   if (status === 'failed') return 'bg-red-950/40 text-red-400 border-red-900/40';
   return 'bg-gray-800/60 text-gray-400 border-gray-700/40';
+}
+
+function formatChannel(channel?: string): string {
+  if (!channel) return '';
+  if (channel === 'mobile_money') return 'Mobile Money';
+  if (channel === 'bank_transfer') return 'Bank Transfer';
+  return channel.charAt(0).toUpperCase() + channel.slice(1);
 }
 
 export default function MemberPortalModal() {
@@ -76,6 +83,13 @@ export default function MemberPortalModal() {
   const [duesError, setDuesError] = useState('');
   const [selectedPeriod, setSelectedPeriod] = useState(currentPeriod());
 
+  // How much of the selected period's dues has already been paid off, and
+  // what the member is about to pay now — lets them pay less than the full
+  // amount (installments) instead of only ever the full amount.
+  const [duesBalance, setDuesBalance] = useState<DuesBalance | null>(null);
+  const [duesBalanceLoading, setDuesBalanceLoading] = useState(false);
+  const [payAmountDraft, setPayAmountDraft] = useState('');
+
   // Event payments state
   const [eventPayments, setEventPayments] = useState<EventPayment[]>([]);
   const [eventPaymentsLoading, setEventPaymentsLoading] = useState(false);
@@ -100,6 +114,21 @@ export default function MemberPortalModal() {
         .finally(() => setEventPaymentsLoading(false));
     }
   }, [isPortalOpen, activeTab, member, token]);
+
+  // Separate effect (keyed on selectedPeriod too) since the balance needs
+  // to refetch whenever the member switches which month they're looking at,
+  // not just when the Dues tab is first opened.
+  useEffect(() => {
+    if (!isPortalOpen || !member || !token || activeTab !== 'dues' || member.duesAmount <= 0) return;
+    setDuesBalanceLoading(true);
+    fetchMyDuesBalance(token, selectedPeriod)
+      .then((balance) => {
+        setDuesBalance(balance);
+        setPayAmountDraft(balance.remaining > 0 ? balance.remaining.toFixed(2) : '');
+      })
+      .catch(() => {})
+      .finally(() => setDuesBalanceLoading(false));
+  }, [isPortalOpen, activeTab, member, token, selectedPeriod]);
 
   if (!isPortalOpen) return null;
 
@@ -189,20 +218,31 @@ export default function MemberPortalModal() {
   const handlePayDues = async () => {
     if (!token) return;
     setDuesError('');
+    const requested = payAmountDraft ? Number(payAmountDraft) : undefined;
+    if (requested !== undefined && (!Number.isFinite(requested) || requested <= 0)) {
+      setDuesError('Enter a valid amount to pay.');
+      return;
+    }
     setDuesPaying(true);
     try {
-      const init = await initializeDuesPayment(token, selectedPeriod);
-      const { reference } = await payWithPaystack({
+      const init = await initializeDuesPayment(token, selectedPeriod, requested);
+      const { reference, channel } = await payWithPaystack({
         publicKey: init.publicKey,
         email: init.email,
         amount: init.amount,
         currency: init.currency,
         reference: init.reference,
         metadata: { type: 'dues', period: selectedPeriod },
+        mock: init.mock,
       });
-      await verifyPayment(token, reference);
-      const refreshed = await fetchMyDuesHistory(token);
-      setDuesHistory(refreshed);
+      await verifyPayment(token, reference, channel);
+      const [refreshedHistory, refreshedBalance] = await Promise.all([
+        fetchMyDuesHistory(token),
+        fetchMyDuesBalance(token, selectedPeriod),
+      ]);
+      setDuesHistory(refreshedHistory);
+      setDuesBalance(refreshedBalance);
+      setPayAmountDraft(refreshedBalance.remaining > 0 ? refreshedBalance.remaining.toFixed(2) : '');
     } catch (err: any) {
       setDuesError(err.message || 'Payment could not be completed.');
     } finally {
@@ -210,7 +250,15 @@ export default function MemberPortalModal() {
     }
   };
 
-  const alreadyPaidForSelectedPeriod = duesHistory.some((d) => d.period === selectedPeriod && d.status === 'success');
+  // Fully paid / partially paid / nothing paid yet for the currently
+  // selected period, derived from the authoritative server-computed balance
+  // rather than re-deriving it from duesHistory client-side.
+  const duesStatusForPeriod: 'paid' | 'partial' | 'unpaid' =
+    !duesBalance || duesBalance.remaining >= duesBalance.duesAmount
+      ? 'unpaid'
+      : duesBalance.remaining <= 0
+      ? 'paid'
+      : 'partial';
 
   return (
     <AnimatePresence>
@@ -479,24 +527,78 @@ export default function MemberPortalModal() {
                           </span>
                         </div>
                         {member.duesAmount > 0 && (
-                          <div className="flex items-center gap-2">
-                            <input
-                              type="month"
-                              value={selectedPeriod}
-                              onChange={(e) => setSelectedPeriod(e.target.value)}
-                              className="bg-charcoal-card border border-gray-800 rounded px-3 py-2 text-xs text-white focus:outline-none focus:border-luxury-gold"
-                            />
-                            <button
-                              onClick={handlePayDues}
-                              disabled={duesPaying || alreadyPaidForSelectedPeriod}
-                              className="px-4 py-2 rounded bg-gradient-to-r from-luxury-gold to-luxury-gold-dark text-black font-sans font-black tracking-widest text-[10px] uppercase transition-all shadow-[0_2px_10px_rgba(212,175,55,0.2)] disabled:opacity-50 flex items-center gap-1.5 cursor-pointer"
-                            >
-                              {duesPaying ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Wallet className="w-3.5 h-3.5" />}
-                              {alreadyPaidForSelectedPeriod ? 'Paid' : `Pay for ${formatPeriodLabel(selectedPeriod)}`}
-                            </button>
-                          </div>
+                          <input
+                            type="month"
+                            value={selectedPeriod}
+                            onChange={(e) => setSelectedPeriod(e.target.value)}
+                            className="bg-charcoal-card border border-gray-800 rounded px-3 py-2 text-xs text-white focus:outline-none focus:border-luxury-gold"
+                          />
                         )}
                       </div>
+
+                      {member.duesAmount > 0 && (
+                        <div className="mt-4 pt-4 border-t border-gray-900/60">
+                          <div className="flex items-center justify-between mb-3">
+                            <span className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-500">
+                              {formatPeriodLabel(selectedPeriod)}
+                            </span>
+                            <span
+                              className={`text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded border ${
+                                duesStatusForPeriod === 'paid'
+                                  ? 'bg-green-950/40 text-green-400 border-green-900/40'
+                                  : duesStatusForPeriod === 'partial'
+                                  ? 'bg-yellow-950/30 text-yellow-400 border-yellow-900/40'
+                                  : 'bg-gray-800/60 text-gray-400 border-gray-700/40'
+                              }`}
+                            >
+                              {duesStatusForPeriod}
+                            </span>
+                          </div>
+
+                          {duesBalanceLoading ? (
+                            <div className="text-[10px] text-gray-500 flex items-center gap-1.5">
+                              <Loader2 className="w-3 h-3 animate-spin" /> Loading balance...
+                            </div>
+                          ) : duesBalance ? (
+                            <p className="text-[10px] text-gray-400 font-mono mb-3">
+                              {member.currency} {duesBalance.paid.toFixed(2)} of {member.currency} {duesBalance.duesAmount.toFixed(2)} paid
+                              {duesBalance.remaining > 0 && ` — ${member.currency} ${duesBalance.remaining.toFixed(2)} remaining`}
+                            </p>
+                          ) : null}
+
+                          {duesStatusForPeriod !== 'paid' && (
+                            <div className="flex items-center gap-2">
+                              <div className="flex-1">
+                                <label className="font-sans text-[9px] font-black uppercase tracking-widest text-gray-500 block mb-1">
+                                  Amount to pay ({member.currency})
+                                </label>
+                                <input
+                                  type="number"
+                                  min={0.01}
+                                  step="0.01"
+                                  max={duesBalance?.remaining || undefined}
+                                  value={payAmountDraft}
+                                  onChange={(e) => setPayAmountDraft(e.target.value)}
+                                  placeholder="Full remaining balance"
+                                  className="w-full bg-charcoal-card border border-gray-800 rounded px-3 py-2 text-xs text-white focus:outline-none focus:border-luxury-gold"
+                                />
+                                <p className="text-[9px] text-gray-600 mt-1">
+                                  Leave as-is to pay the full balance, or lower it to pay in installments.
+                                </p>
+                              </div>
+                              <button
+                                onClick={handlePayDues}
+                                disabled={duesPaying || duesBalanceLoading || !duesBalance || duesBalance.remaining <= 0}
+                                className="px-4 py-2.5 rounded bg-gradient-to-r from-luxury-gold to-luxury-gold-dark text-black font-sans font-black tracking-widest text-[10px] uppercase transition-all shadow-[0_2px_10px_rgba(212,175,55,0.2)] disabled:opacity-50 flex items-center gap-1.5 cursor-pointer shrink-0 self-end"
+                              >
+                                {duesPaying ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Wallet className="w-3.5 h-3.5" />}
+                                Pay
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
                       {duesError && (
                         <div className="flex items-center gap-2 text-xs text-red-500 bg-red-500/10 border border-red-500/20 p-3 rounded mt-4">
                           <AlertCircle className="w-4 h-4 shrink-0" />
@@ -522,7 +624,10 @@ export default function MemberPortalModal() {
                             <div key={d.id} className="flex items-center justify-between bg-jet-black border border-gray-900 rounded p-3">
                               <div>
                                 <span className="font-sans text-xs font-bold text-white block">{formatPeriodLabel(d.period)}</span>
-                                <span className="font-mono text-[10px] text-gray-500">{d.currency} {d.amount.toFixed(2)}</span>
+                                <span className="font-mono text-[10px] text-gray-500">
+                                  {d.currency} {d.amount.toFixed(2)}
+                                  {d.channel && ` · ${formatChannel(d.channel)}`}
+                                </span>
                               </div>
                               <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded border ${statusBadgeClass(d.status)}`}>
                                 {d.status}
@@ -636,7 +741,10 @@ export default function MemberPortalModal() {
                             <div key={p.id} className="flex items-center justify-between bg-jet-black border border-gray-900 rounded p-3">
                               <div className="min-w-0">
                                 <span className="font-sans text-xs font-bold text-white block truncate">{p.eventTitle}</span>
-                                <span className="font-mono text-[10px] text-gray-500">{p.currency} {p.amount.toFixed(2)}</span>
+                                <span className="font-mono text-[10px] text-gray-500">
+                                  {p.currency} {p.amount.toFixed(2)}
+                                  {p.channel && ` · ${formatChannel(p.channel)}`}
+                                </span>
                               </div>
                               <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded border shrink-0 ml-3 ${statusBadgeClass(p.status)}`}>
                                 {p.status}

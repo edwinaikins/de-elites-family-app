@@ -173,6 +173,34 @@ Member portal accounts themselves are created by an admin from the CMS
 (**Staff Login** link in the site footer → **Member Accounts** tab) — there's
 no public self-registration.
 
+### Mobile Money
+
+Both "Pay Dues" and "Pay & Register" checkouts offer **Mobile Money**
+alongside cards — the popup (real or simulated) opens with a Card / Mobile
+Money switcher. On the real Paystack side this just needs Mobile Money
+enabled as a channel on your Paystack account (it's on by default for most
+Ghana/Nigeria merchant accounts); nothing else to configure. In mock mode
+the simulated checkout offers MTN Mobile Money, Vodafone Cash, and
+AirtelTigo Money as fake networks purely for testing the flow.
+
+### Partial ("installment") dues payments
+
+A member doesn't have to pay their full monthly dues in one go — the Dues
+tab in the portal shows how much of the selected month is already paid
+(`GHS 20 of GHS 50 paid`) and lets them type in a smaller amount to pay
+toward it, making as many partial payments as they like until the period is
+fully covered. Event registration payments stay full-price-only (a
+half-registered event ticket isn't a meaningful state).
+
+### Reconciling payments ("who paid what")
+
+The CMS's **10. Payments** tab (Staff Login → Payments) lists every dues
+and event payment from every member in one place — searchable by member
+name/email, filterable by type and status, with a running total of what's
+actually been collected. Use **Download CSV** there to hand a reconciliation
+sheet to a treasurer or import it into a spreadsheet. Each row also shows
+which channel (card / mobile money / etc.) the payment cleared through.
+
 ## Adding a real domain + HTTPS later
 
 Once you point a domain's A record at `178.63.178.212`:

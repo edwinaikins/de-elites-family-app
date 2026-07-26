@@ -248,6 +248,13 @@ async function initDb() {
       );
     `);
 
+    // Migration: record which channel (card, mobile_money, bank, ...) a
+    // payment cleared through, for reconciliation. Added after the tables
+    // above already existed in production, hence ALTER TABLE ... ADD COLUMN
+    // IF NOT EXISTS rather than baking it into the CREATE TABLE statements.
+    await db.query(`ALTER TABLE welfare_dues_payments ADD COLUMN IF NOT EXISTS channel TEXT;`);
+    await db.query(`ALTER TABLE event_payments ADD COLUMN IF NOT EXISTS channel TEXT;`);
+
     for (const sec of SECTIONS) {
       const existing = await db.query("SELECT 1 FROM cms_sections WHERE section = $1", [sec]);
       if (existing.rowCount === 0) {
@@ -539,6 +546,7 @@ function mapDuesRow(row: any) {
     period: row.period,
     reference: row.reference,
     status: row.status,
+    channel: row.channel || undefined,
     paidAt: row.paid_at || undefined,
     createdAt: row.created_at,
   };
@@ -554,6 +562,7 @@ function mapEventPaymentRow(row: any) {
     currency: row.currency,
     reference: row.reference,
     status: row.status,
+    channel: row.channel || undefined,
     paidAt: row.paid_at || undefined,
     createdAt: row.created_at,
   };
@@ -802,13 +811,74 @@ app.get("/api/admin/members/:id/event-payments", async (req, res) => {
   }
 });
 
+// Reconciliation: every dues + event payment across every member, joined
+// with the member's name/email, newest first — the "who paid what" view
+// the CMS Payments tab renders. Combines both payment tables with a UNION
+// ALL rather than two round-trips so sorting/paging stays consistent.
+app.get("/api/admin/payments", async (req, res) => {
+  try {
+    const db = getPool();
+    const result = await db.query(`
+      SELECT wd.id, wd.member_id, ma.full_name, ma.email, 'dues' AS type,
+             wd.period AS label, wd.amount, wd.currency, wd.channel,
+             wd.reference, wd.status, wd.paid_at, wd.created_at
+      FROM welfare_dues_payments wd
+      JOIN member_accounts ma ON ma.id = wd.member_id
+      UNION ALL
+      SELECT ep.id, ep.member_id, ma.full_name, ma.email, 'event' AS type,
+             ep.event_title AS label, ep.amount, ep.currency, ep.channel,
+             ep.reference, ep.status, ep.paid_at, ep.created_at
+      FROM event_payments ep
+      JOIN member_accounts ma ON ma.id = ep.member_id
+      ORDER BY created_at DESC
+    `);
+    const data = result.rows.map((row: any) => ({
+      id: row.id,
+      type: row.type,
+      memberId: row.member_id,
+      memberName: row.full_name,
+      memberEmail: row.email,
+      label: row.label,
+      amount: Number(row.amount),
+      currency: row.currency,
+      channel: row.channel || undefined,
+      reference: row.reference,
+      status: row.status,
+      paidAt: row.paid_at || undefined,
+      createdAt: row.created_at,
+    }));
+    res.json({ success: true, data });
+  } catch (error: any) {
+    console.error("Failed to load admin payments:", error);
+    res.status(500).json({ success: false, error: error.message || "Failed to load payments." });
+  }
+});
+
 // --- Payments (Paystack) ---
 //
-// We never let the client dictate an amount. Both "initialize" routes look
-// up the trustworthy amount server-side (the member's configured dues
-// amount, or the event's configured price) and write a 'pending' row before
-// telling the client anything, so a Paystack verify (or webhook) later has
-// something authoritative to check the charge against.
+// We never let the client dictate an amount out of thin air. Both
+// "initialize" routes look up the trustworthy ceiling server-side (the
+// member's configured dues amount, or the event's configured price) and
+// write a 'pending' row before telling the client anything, so a Paystack
+// verify (or webhook) later has something authoritative to check the
+// charge against. Dues payments additionally support paying less than the
+// full amount owed for a period (see getDuesPaidSoFar below) — a member can
+// make several partial payments toward one period; event registration
+// payments stay all-or-nothing since a half-paid event ticket isn't a
+// meaningful state.
+
+// Sum of already-successful dues payments a member has made for a given
+// period, so both initialize (to cap what can still be paid) and the
+// member/admin UIs (to show "GHS 20 of GHS 50 paid") can compute a
+// consistent remaining balance.
+async function getDuesPaidSoFar(memberId: string, period: string): Promise<number> {
+  const db = getPool();
+  const result = await db.query(
+    `SELECT COALESCE(SUM(amount), 0) AS paid FROM welfare_dues_payments WHERE member_id = $1 AND period = $2 AND status = 'success'`,
+    [memberId, period]
+  );
+  return Number(result.rows[0]?.paid || 0);
+}
 
 // Lets the client show a "Test Mode" badge on payment buttons before the
 // member even starts a checkout, rather than only discovering it's a mock
@@ -817,9 +887,28 @@ app.get("/api/payments/config", (req, res) => {
   res.json({ success: true, data: { mock: isMockPaymentsEnabled() } });
 });
 
+// Lets the member portal show "GHS 20 of GHS 50 paid" for the currently
+// selected period without re-deriving it from the full payment history on
+// the client.
+app.get("/api/member/dues-balance/:period", requireMemberAuth, async (req: any, res) => {
+  try {
+    const { period } = req.params;
+    const db = getPool();
+    const memberRes = await db.query("SELECT dues_amount, currency FROM member_accounts WHERE id = $1", [req.memberId]);
+    const member = memberRes.rows[0];
+    if (!member) return res.status(404).json({ success: false, error: "Member not found." });
+    const duesAmount = Number(member.dues_amount);
+    const paid = await getDuesPaidSoFar(req.memberId, period);
+    const remaining = Math.max(0, Math.round((duesAmount - paid) * 100) / 100);
+    res.json({ success: true, data: { period, duesAmount, paid, remaining, currency: member.currency } });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message || "Failed to load dues balance." });
+  }
+});
+
 app.post("/api/payments/dues/initialize", requireMemberAuth, async (req: any, res) => {
   try {
-    const { period } = req.body || {};
+    const { period, amount: requestedAmount } = req.body || {};
     if (!period || typeof period !== "string") {
       return res.status(400).json({ success: false, error: "A dues period (e.g. '2026-08') is required." });
     }
@@ -827,9 +916,31 @@ app.post("/api/payments/dues/initialize", requireMemberAuth, async (req: any, re
     const memberRes = await db.query("SELECT * FROM member_accounts WHERE id = $1", [req.memberId]);
     const member = memberRes.rows[0];
     if (!member) return res.status(404).json({ success: false, error: "Member not found." });
-    const amount = Number(member.dues_amount);
-    if (!amount || amount <= 0) {
+    const duesAmount = Number(member.dues_amount);
+    if (!duesAmount || duesAmount <= 0) {
       return res.status(400).json({ success: false, error: "No welfare dues amount has been configured for your account. Contact an admin." });
+    }
+
+    const paidSoFar = await getDuesPaidSoFar(req.memberId, period);
+    const remaining = Math.round((duesAmount - paidSoFar) * 100) / 100;
+    if (remaining <= 0) {
+      return res.status(400).json({ success: false, error: `You've already fully paid your dues for ${period}.` });
+    }
+
+    // Default to paying off the full remaining balance; allow a smaller,
+    // partial amount if the member specifies one (installment-style
+    // payments toward one period).
+    let amount = remaining;
+    if (requestedAmount !== undefined && requestedAmount !== null && requestedAmount !== "") {
+      const requested = Math.round(Number(requestedAmount) * 100) / 100;
+      if (!Number.isFinite(requested) || requested <= 0) {
+        return res.status(400).json({ success: false, error: "Enter a valid payment amount." });
+      }
+      // Small epsilon tolerance for floating point rounding.
+      if (requested > remaining + 0.01) {
+        return res.status(400).json({ success: false, error: `You only owe ${member.currency} ${remaining.toFixed(2)} for this period.` });
+      }
+      amount = requested;
     }
 
     const mock = isMockPaymentsEnabled();
@@ -911,10 +1022,15 @@ async function verifyWithPaystack(reference: string) {
   return json.data;
 }
 
+// Allowlist for the channel a mock checkout can self-report — real payments
+// never reach this list; their channel always comes from Paystack's own
+// verify response below, never from anything the client sends.
+const MOCK_CHANNELS = new Set(["card", "mobile_money"]);
+
 // Shared by the member-facing verify endpoint and the webhook handler.
 // Re-checks status/amount/currency against what WE recorded at initialize
 // time before ever marking a payment as successful.
-async function verifyAndRecordPayment(reference: string, expectedMemberId?: string) {
+async function verifyAndRecordPayment(reference: string, expectedMemberId?: string, clientReportedChannel?: string) {
   const found = await findPaymentByReference(reference);
   if (!found) {
     return { success: false as const, error: "Payment record not found." };
@@ -931,22 +1047,28 @@ async function verifyAndRecordPayment(reference: string, expectedMemberId?: stri
   // checkout (see MockPaystackCheckout.tsx) already simulated collecting
   // card details and confirming the charge, so we just record the result it
   // reported (rejecting the reference would mean a member "cancelled" the
-  // mock checkout, which never reaches this endpoint at all).
+  // mock checkout, which never reaches this endpoint at all). The channel
+  // (card vs mobile money) is only ever trusted from the client for mock
+  // references — for real payments it always comes from Paystack's verify
+  // response a few lines down, never from req.body.
   const isMock = reference.startsWith(MOCK_REFERENCE_PREFIX);
   let isValid: boolean;
+  let channel: string | undefined;
   if (isMock) {
     isValid = true;
+    channel = clientReportedChannel && MOCK_CHANNELS.has(clientReportedChannel) ? clientReportedChannel : "card";
   } else {
     const data = await verifyWithPaystack(reference);
     const expectedSubunit = Math.round(Number(row.amount) * 100);
     isValid = data.status === "success" && data.amount === expectedSubunit && data.currency === row.currency;
+    channel = data.channel || undefined;
   }
 
   const db = getPool();
   if (isValid) {
     const updated = await db.query(
-      `UPDATE ${table} SET status = 'success', paid_at = now() WHERE reference = $1 RETURNING *`,
-      [reference]
+      `UPDATE ${table} SET status = 'success', paid_at = now(), channel = $2 WHERE reference = $1 RETURNING *`,
+      [reference, channel || null]
     );
     return { success: true as const, table, row: updated.rows[0] };
   } else {
@@ -957,9 +1079,9 @@ async function verifyAndRecordPayment(reference: string, expectedMemberId?: stri
 
 app.post("/api/payments/verify", requireMemberAuth, async (req: any, res) => {
   try {
-    const { reference } = req.body || {};
+    const { reference, channel } = req.body || {};
     if (!reference) return res.status(400).json({ success: false, error: "reference is required." });
-    const result = await verifyAndRecordPayment(reference, req.memberId);
+    const result = await verifyAndRecordPayment(reference, req.memberId, typeof channel === "string" ? channel : undefined);
     if (!result.success) {
       return res.status(400).json({ success: false, error: result.error });
     }
