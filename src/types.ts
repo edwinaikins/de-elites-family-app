@@ -172,6 +172,10 @@ export interface PaymentInitResponse {
   currency: string;
   email: string;
   publicKey: string;
+  // True when the server has no real Paystack keys configured (or
+  // PAYSTACK_MOCK=true) and this payment will be simulated end-to-end
+  // instead of hitting the real Paystack API.
+  mock?: boolean;
 }
 
 export interface MemberApplication {

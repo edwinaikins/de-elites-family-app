@@ -3,6 +3,14 @@
 // present by the time this runs). Amount/reference/currency all come from
 // our own backend (see /api/payments/*/initialize) — never computed here —
 // so the client can't influence what actually gets charged.
+//
+// When the backend has no real Paystack keys configured, it initializes
+// payments in mock mode instead (see server.ts's isMockPaymentsEnabled())
+// and returns publicKey: 'mock' / mock: true. payWithPaystack() below
+// detects that and opens the simulated checkout (MockPaystackCheckout.tsx)
+// instead of the real Paystack popup — every call site stays unchanged.
+
+import { openMockCheckout } from './mockPaystackStore';
 
 interface PaystackPopSetupOptions {
   key: string;
@@ -39,6 +47,7 @@ export interface PayWithPaystackParams {
   currency: string;
   reference: string;
   metadata?: Record<string, any>;
+  mock?: boolean;
 }
 
 export function isPaystackReady(): boolean {
@@ -46,6 +55,15 @@ export function isPaystackReady(): boolean {
 }
 
 export function payWithPaystack(params: PayWithPaystackParams): Promise<{ reference: string }> {
+  if (params.mock || params.publicKey === 'mock') {
+    return openMockCheckout({
+      amount: params.amount,
+      currency: params.currency,
+      email: params.email,
+      reference: params.reference,
+    });
+  }
+
   return new Promise((resolve, reject) => {
     if (!isPaystackReady()) {
       reject(new Error('Payment provider failed to load. Please check your connection and try again.'));

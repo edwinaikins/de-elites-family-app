@@ -8,6 +8,7 @@ import {
 import { useMemberAuth } from '../context/MemberAuthContext';
 import { useCms } from '../context/CmsContext';
 import { useEventPayments } from '../hooks/useEventPayments';
+import { usePaymentsConfig } from '../hooks/usePaymentsConfig';
 import {
   fetchMyDuesHistory, fetchMyEventPayments, initializeDuesPayment,
   verifyPayment, changeMyPassword,
@@ -40,6 +41,7 @@ export default function MemberPortalModal() {
   const { member, token, loading, isPortalOpen, closePortal, login, logout, updateBio } = useMemberAuth();
   const { events } = useCms();
   const { paidEventIds, payingId, errorById, payForEvent } = useEventPayments();
+  const { mock: mockPayments } = usePaymentsConfig();
 
   const [activeTab, setActiveTab] = useState<PortalTab>('profile');
 
@@ -320,6 +322,14 @@ export default function MemberPortalModal() {
                     Logout
                   </button>
                 </div>
+
+                {mockPayments && (
+                  <div className="mt-4">
+                    <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-yellow-500/10 border border-yellow-500/30 text-yellow-400 text-[9px] font-mono font-bold uppercase tracking-wider">
+                      Test Mode — payments are simulated
+                    </span>
+                  </div>
+                )}
 
                 {/* Tabs */}
                 <div className="flex gap-2 mt-5">

@@ -152,10 +152,22 @@ systemctl --user restart de-elites-family
 curl http://127.0.0.1:3000/api/health
 ```
 
-Until `PAYSTACK_PUBLIC_KEY`/`PAYSTACK_SECRET_KEY` are set, the "Pay & Register"
-and "Pay Dues" buttons will show a clear "Payments are not configured yet"
-error instead of failing silently — safe to deploy ahead of having real
-Paystack keys.
+**Before you have real Paystack keys**, the app doesn't block you — it
+automatically runs payments in **mock mode**: "Pay & Register" and "Pay
+Dues" open a simulated checkout popup (styled to look like Paystack's own,
+labeled "Test Mode") instead of the real one. Clicking "Pay" there fakes a
+successful charge — no real API calls, no keys required — so you can test
+the entire member portal payment flow (dues, paid events, payment history)
+right away. A yellow "Test Mode — payments are simulated" badge shows up
+near every payment button while this is active, so it's never mistaken for
+a live charge. The moment you add real `PAYSTACK_PUBLIC_KEY` /
+`PAYSTACK_SECRET_KEY` values and restart the service, it switches to the
+real Paystack popup automatically — no flag to remember to flip.
+
+If you want to force mock mode on (e.g. a staging box you never want to
+move real money) or force it off (so missing keys correctly show a "not
+configured" error instead of silently mocking), set `PAYSTACK_MOCK=true` or
+`PAYSTACK_MOCK=false` in `.env` — see `.env.example` for details.
 
 Member portal accounts themselves are created by an admin from the CMS
 (**Staff Login** link in the site footer → **Member Accounts** tab) — there's

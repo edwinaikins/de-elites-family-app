@@ -48,6 +48,32 @@ function getPaystackPublicKey(): string {
   return process.env.PAYSTACK_PUBLIC_KEY || "";
 }
 
+// Mock payment mode lets the whole "pay dues" / "pay & register for an
+// event" flow be exercised end-to-end — client checkout UI, server
+// initialize/verify, payment history — without a real Paystack account.
+//
+// - PAYSTACK_MOCK=true  forces mock mode on, even if real keys are set
+//   (handy for a staging box that shouldn't move real money).
+// - PAYSTACK_MOCK=false forces it off — if real keys are then missing,
+//   payments correctly fall back to the "not configured" error instead of
+//   silently mocking in what looks like a production environment.
+// - Unset (the default): mock mode auto-enables whenever real Paystack
+//   keys aren't configured, so payments "just work" for testing the moment
+//   the app is deployed, and auto-switches to real Paystack the moment real
+//   keys are added — no flag to remember to flip.
+function isMockPaymentsEnabled(): boolean {
+  const flag = process.env.PAYSTACK_MOCK;
+  if (flag === "true") return true;
+  if (flag === "false") return false;
+  return !process.env.PAYSTACK_PUBLIC_KEY || !process.env.PAYSTACK_SECRET_KEY;
+}
+
+// Mock payment references are tagged with this prefix so verification can
+// tell, per-payment, whether it was ever meant to touch the real Paystack
+// API — independent of whatever isMockPaymentsEnabled() returns *now* (mode
+// could change between initializing and verifying a payment).
+const MOCK_REFERENCE_PREFIX = "mock-";
+
 function getDuesCurrency(): string {
   return process.env.DUES_CURRENCY || "GHS";
 }
@@ -784,6 +810,13 @@ app.get("/api/admin/members/:id/event-payments", async (req, res) => {
 // telling the client anything, so a Paystack verify (or webhook) later has
 // something authoritative to check the charge against.
 
+// Lets the client show a "Test Mode" badge on payment buttons before the
+// member even starts a checkout, rather than only discovering it's a mock
+// payment once the initialize call comes back.
+app.get("/api/payments/config", (req, res) => {
+  res.json({ success: true, data: { mock: isMockPaymentsEnabled() } });
+});
+
 app.post("/api/payments/dues/initialize", requireMemberAuth, async (req: any, res) => {
   try {
     const { period } = req.body || {};
@@ -799,19 +832,20 @@ app.post("/api/payments/dues/initialize", requireMemberAuth, async (req: any, re
       return res.status(400).json({ success: false, error: "No welfare dues amount has been configured for your account. Contact an admin." });
     }
 
-    const publicKey = getPaystackPublicKey();
-    if (!publicKey) {
+    const mock = isMockPaymentsEnabled();
+    const publicKey = mock ? "mock" : getPaystackPublicKey();
+    if (!mock && !publicKey) {
       return res.status(503).json({ success: false, error: "Payments are not configured yet. Contact an admin." });
     }
 
-    const reference = `dues-${req.memberId}-${period}-${Date.now()}`;
+    const reference = `${mock ? MOCK_REFERENCE_PREFIX : ""}dues-${req.memberId}-${period}-${Date.now()}`;
     await db.query(
       `INSERT INTO welfare_dues_payments (id, member_id, amount, currency, period, reference, status)
        VALUES ($1,$2,$3,$4,$5,$6,'pending')`,
       [`dp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, req.memberId, amount, member.currency, period, reference]
     );
 
-    res.json({ success: true, data: { reference, amount, currency: member.currency, email: member.email, publicKey } });
+    res.json({ success: true, data: { reference, amount, currency: member.currency, email: member.email, publicKey, mock } });
   } catch (error: any) {
     console.error("Failed to initialize dues payment:", error);
     res.status(500).json({ success: false, error: error.message || "Failed to start payment." });
@@ -831,8 +865,9 @@ app.post("/api/payments/event/initialize", requireMemberAuth, async (req: any, r
       return res.status(400).json({ success: false, error: "This event does not require payment." });
     }
 
-    const publicKey = getPaystackPublicKey();
-    if (!publicKey) {
+    const mock = isMockPaymentsEnabled();
+    const publicKey = mock ? "mock" : getPaystackPublicKey();
+    if (!mock && !publicKey) {
       return res.status(503).json({ success: false, error: "Payments are not configured yet. Contact an admin." });
     }
 
@@ -842,14 +877,14 @@ app.post("/api/payments/event/initialize", requireMemberAuth, async (req: any, r
     if (!member) return res.status(404).json({ success: false, error: "Member not found." });
 
     const currency = event.currency || getDuesCurrency();
-    const reference = `event-${req.memberId}-${eventId}-${Date.now()}`;
+    const reference = `${mock ? MOCK_REFERENCE_PREFIX : ""}event-${req.memberId}-${eventId}-${Date.now()}`;
     await db.query(
       `INSERT INTO event_payments (id, member_id, event_id, event_title, amount, currency, reference, status)
        VALUES ($1,$2,$3,$4,$5,$6,$7,'pending')`,
       [`ep-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, req.memberId, eventId, event.title, amount, currency, reference]
     );
 
-    res.json({ success: true, data: { reference, amount, currency, email: member.email, publicKey } });
+    res.json({ success: true, data: { reference, amount, currency, email: member.email, publicKey, mock } });
   } catch (error: any) {
     console.error("Failed to initialize event payment:", error);
     res.status(500).json({ success: false, error: error.message || "Failed to start payment." });
@@ -892,9 +927,20 @@ async function verifyAndRecordPayment(reference: string, expectedMemberId?: stri
     return { success: true as const, table, row };
   }
 
-  const data = await verifyWithPaystack(reference);
-  const expectedSubunit = Math.round(Number(row.amount) * 100);
-  const isValid = data.status === "success" && data.amount === expectedSubunit && data.currency === row.currency;
+  // Mock payments never touch Paystack's real API — the client-side mock
+  // checkout (see MockPaystackCheckout.tsx) already simulated collecting
+  // card details and confirming the charge, so we just record the result it
+  // reported (rejecting the reference would mean a member "cancelled" the
+  // mock checkout, which never reaches this endpoint at all).
+  const isMock = reference.startsWith(MOCK_REFERENCE_PREFIX);
+  let isValid: boolean;
+  if (isMock) {
+    isValid = true;
+  } else {
+    const data = await verifyWithPaystack(reference);
+    const expectedSubunit = Math.round(Number(row.amount) * 100);
+    isValid = data.status === "success" && data.amount === expectedSubunit && data.currency === row.currency;
+  }
 
   const db = getPool();
   if (isValid) {

@@ -15,6 +15,7 @@ import CmsDashboard from './components/CmsDashboard';
 import UpcomingEventBanner from './components/UpcomingEventBanner';
 import MemberPortalModal from './components/MemberPortalModal';
 import JoinApplicationModal from './components/JoinApplicationModal';
+import MockPaystackCheckout from './components/MockPaystackCheckout';
 import { CmsProvider } from './context/CmsContext';
 import { MemberAuthProvider } from './context/MemberAuthContext';
 
@@ -62,6 +63,11 @@ function AppContent() {
 
       {/* Floating Upcoming Event Banner */}
       <UpcomingEventBanner />
+
+      {/* Simulated Paystack checkout — only ever shown when the backend has
+          no real Paystack keys configured (see isMockPaymentsEnabled() in
+          server.ts). Otherwise payWithPaystack() opens the real popup. */}
+      <MockPaystackCheckout />
     </div>
   );
 }

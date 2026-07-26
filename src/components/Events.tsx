@@ -3,10 +3,12 @@ import { motion } from 'motion/react';
 import { Calendar, MapPin, Clock, Crown, ArrowUpRight, Tag, CreditCard, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
 import { useCms } from '../context/CmsContext';
 import { useEventPayments } from '../hooks/useEventPayments';
+import { usePaymentsConfig } from '../hooks/usePaymentsConfig';
 
 export default function Events() {
   const { events } = useCms();
   const { paidEventIds, payingId, errorById, payForEvent } = useEventPayments();
+  const { mock: mockPayments } = usePaymentsConfig();
 
   // Stagger animation container
   const containerVariants = {
@@ -52,6 +54,14 @@ export default function Events() {
             <Crown className="w-3.5 h-3.5 animate-pulse" />
             <span>Sovereign Assemblies</span>
           </motion.div>
+
+          {mockPayments && (
+            <div className="mb-2">
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-yellow-500/10 border border-yellow-500/30 text-yellow-400 text-[9px] font-mono font-bold uppercase tracking-wider">
+                Test Mode — payments are simulated
+              </span>
+            </div>
+          )}
 
           <motion.h2
             initial={{ opacity: 0, y: 15 }}
