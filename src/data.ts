@@ -18,7 +18,7 @@ export const PILLARS: Pillar[] = [
   {
     id: 'unity',
     name: 'Unity',
-    description: 'A fragmented house cannot stand. We merge our individual strengths into a single, unstoppable collective voice inspired by the Shatta legacy.',
+    description: 'A fragmented house cannot stand. We merge our individual strengths into a single, unstoppable collective voice, forged entirely by our own resolve.',
     icon: 'Users',
     quote: 'Separated we are whispers; united we are an absolute roar.'
   },
@@ -48,11 +48,11 @@ export const PILLARS: Pillar[] = [
 export const LEADERSHIP: Leader[] = [
   {
     id: 'leader-1',
-    name: 'Shatta Wale',
-    role: 'The Legacy Patron & Supreme Leader',
+    name: 'Marcus "The Sovereign" Bediako',
+    role: 'The Founding Patron & Supreme Leader',
     quote: 'Hustle is my signature, royalty is my birthright. De Elites Family is the heartbeat of the streets and the boardrooms combined.',
     image: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=400&h=400',
-    bio: 'The champion of street-smart musical royalty. Inspiring millions with unwavering drive, direct leadership, and global impact, establishing a blueprint of self-made legacy.',
+    bio: 'The visionary founder of street-smart musical royalty. Inspiring millions with unwavering drive, direct leadership, and global impact, establishing a blueprint of self-made legacy.',
     socials: {
       twitter: 'https://twitter.com',
       instagram: 'https://instagram.com',
@@ -101,7 +101,7 @@ export const LEADERSHIP: Leader[] = [
     role: 'Chief Communications Officer',
     quote: 'Our voice must cut through the noise with raw conviction and absolute clarity. The Elite message is a movement of sovereign hope.',
     image: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=400&h=400',
-    bio: 'Overseeing global public relations, media announcements, and digital brand voice. Building dynamic promotional campaigns to extend the Shatta Movement Legacy.',
+    bio: 'Overseeing global public relations, media announcements, and digital brand voice. Building dynamic promotional campaigns to extend the De Elites Family legacy.',
     socials: {
       twitter: 'https://twitter.com',
       instagram: 'https://instagram.com'
@@ -212,7 +212,7 @@ export const DEFAULT_SHOUTOUTS: Shoutout[] = [
     id: 's-1',
     name: 'Sampson "Vibe" Osei',
     role: 'Creative Designer / Kumasi Chapter',
-    message: 'The Elites Family saved my creative career. Hearing Shatta say "Hustle can build palaces" motivated me to open my own branding agency. Today we employ 5 people. Absolute love and unity!',
+    message: 'The Elites Family saved my creative career. Hearing our founder say "Hustle can build palaces" motivated me to open my own branding agency. Today we employ 5 people. Absolute love and unity!',
     timestamp: '2 hours ago',
     theme: 'gold-glow',
     likes: 24
@@ -656,7 +656,7 @@ export const DEFAULT_MEMBERS: Member[] = [
     chapter: 'Member',
     role: 'Film Editor',
     image: 'https://images.unsplash.com/photo-1500048993953-d23a436266cf?auto=format&fit=crop&q=80&w=400&h=400',
-    bio: 'Editing premium documentaries that follow the historical journey of the Shatta Movement across continents.',
+    bio: 'Editing premium documentaries that follow the historical journey of De Elites Family across continents.',
     joinedDate: 'Oct 2026',
     socials: { github: 'https://github.com' }
   },
@@ -767,11 +767,11 @@ export const DEFAULT_EVENTS: EliteEvent[] = [
   },
   {
     id: 'event-2',
-    title: 'Shatta Movement Legacy Concert',
+    title: 'De Elites Legacy Concert',
     date: 'October 24, 2026',
     time: '8:00 PM GMT',
     location: 'Black Star Square, Accra, Ghana',
-    description: 'An extraordinary night of royal sound, energy, and street-smart celebration led by the Supreme Leader Shatta Wale alongside global guest performances. Strictly high-energy.',
+    description: 'An extraordinary night of royal sound, energy, and street-smart celebration led by our Supreme Leader alongside global guest performances. Strictly high-energy.',
     image: 'https://images.unsplash.com/photo-1470225620780-dba8ba36b745?auto=format&fit=crop&q=80&w=800&h=600',
     category: 'Concert',
     buttonText: 'Get Movement Pass',

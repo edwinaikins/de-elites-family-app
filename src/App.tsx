@@ -9,11 +9,11 @@ import Hero from './components/Hero';
 import WhoWeAre from './components/WhoWeAre';
 import Leadership from './components/Leadership';
 import Gallery from './components/Gallery';
-import MembersList from './components/MembersList';
 import ShoutoutWall from './components/ShoutoutWall';
 import Events from './components/Events';
 import Footer from './components/Footer';
 import CmsDashboard from './components/CmsDashboard';
+import UpcomingEventBanner from './components/UpcomingEventBanner';
 import { CmsProvider } from './context/CmsContext';
 
 function AppContent() {
@@ -36,14 +36,11 @@ function AppContent() {
         {/* Section 3: Leadership Council */}
         <Leadership />
 
-        {/* Section 4: Legacy Projects Gallery */}
-        <Gallery />
-
-        {/* Section 5: Upcoming Events */}
+        {/* Section 4: Upcoming Events */}
         <Events />
 
-        {/* Section 6: Members Directory */}
-        <MembersList />
+        {/* Section 5: Legacy Projects Gallery */}
+        <Gallery />
 
         {/* Section 6: Member Shoutout Wall */}
         <ShoutoutWall />
@@ -55,6 +52,9 @@ function AppContent() {
 
       {/* Slide-Up CMS Admin Panel */}
       <CmsDashboard isOpen={cmsOpen} onClose={() => setCmsOpen(false)} />
+
+      {/* Floating Upcoming Event Banner */}
+      <UpcomingEventBanner />
     </div>
   );
 }

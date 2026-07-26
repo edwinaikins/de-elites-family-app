@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { MessageSquare, Heart, Send, Sparkles, Award, RotateCcw, AlertCircle } from 'lucide-react';
+import { MessageSquare, Heart, Send, Crown, Award, RotateCcw, AlertCircle } from 'lucide-react';
 import { useCms } from '../context/CmsContext';
 import { Shoutout } from '../types';
 
@@ -124,7 +124,7 @@ export default function ShoutoutWall() {
             
             {/* Corner Accent Sparkle */}
             <div className="absolute top-4 right-4 text-luxury-gold/20">
-              <Sparkles className="w-6 h-6" />
+              <Crown className="w-6 h-6" />
             </div>
 
             <h3 className="font-display text-xl font-black text-white uppercase mb-1 tracking-wider">

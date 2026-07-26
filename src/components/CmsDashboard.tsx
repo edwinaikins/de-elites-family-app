@@ -1,26 +1,28 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { 
-  Settings, Save, Plus, Trash2, Shield, Sparkles, 
-  RefreshCw, Heart, ShieldCheck, Users, Flame, 
-  Award, Compass, Image, MapPin, Calendar, 
-  X, Check, RotateCcw, MessageSquare, AlertCircle, LogOut
+import {
+  Settings, Save, Plus, Trash2, Shield, Crown,
+  RefreshCw, Heart, ShieldCheck, Users, Flame,
+  Award, Compass, Image, Calendar,
+  X, Check, RotateCcw, MessageSquare, AlertCircle, LogOut,
+  UserCheck, Loader2, Mail, Phone
 } from 'lucide-react';
 import { useCms } from '../context/CmsContext';
 import { ImageUpload } from './ImageUpload';
-import { Pillar, Leader, GalleryItem, Member, Shoutout, EliteEvent, HeroConfig, CmsUser } from '../types';
+import { Pillar, Leader, GalleryItem, Shoutout, EliteEvent, HeroConfig, CmsUser, MemberApplication } from '../types';
+import { fetchMemberApplications, updateMemberApplicationStatus, deleteMemberApplication } from '../lib/cmsClient';
 
 interface CmsDashboardProps {
   isOpen: boolean;
   onClose: () => void;
 }
 
-type TabType = 'pillars' | 'leaders' | 'gallery' | 'members' | 'shoutouts' | 'events' | 'hero' | 'users';
+type TabType = 'pillars' | 'leaders' | 'gallery' | 'shoutouts' | 'events' | 'hero' | 'users' | 'applications';
 
 export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
-  const { 
-    pillars, leaders, gallery, members, shoutouts, events, hero, users,
-    updateSection, resetToDefaults, loading, error 
+  const {
+    pillars, leaders, gallery, shoutouts, events, hero, users,
+    updateSection, resetToDefaults, loading, error
   } = useCms();
 
   const [activeTab, setActiveTab] = useState<TabType>('pillars');
@@ -32,11 +34,16 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
   const [localPillars, setLocalPillars] = useState<Pillar[]>([]);
   const [localLeaders, setLocalLeaders] = useState<Leader[]>([]);
   const [localGallery, setLocalGallery] = useState<GalleryItem[]>([]);
-  const [localMembers, setLocalMembers] = useState<Member[]>([]);
   const [localShoutouts, setLocalShoutouts] = useState<Shoutout[]>([]);
   const [localEvents, setLocalEvents] = useState<EliteEvent[]>([]);
   const [localHero, setLocalHero] = useState<HeroConfig[]>([]);
   const [localUsers, setLocalUsers] = useState<CmsUser[]>([]);
+
+  // Prospective member applications (kept out of the CmsDatabase/useCms mechanism
+  // for privacy — fetched from a dedicated, non-public endpoint)
+  const [applications, setApplications] = useState<MemberApplication[]>([]);
+  const [applicationsLoading, setApplicationsLoading] = useState(false);
+  const [applicationsError, setApplicationsError] = useState<string | null>(null);
 
   // Track currently active item for editing or "new" state
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
@@ -59,7 +66,6 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
       setLocalPillars([...pillars]);
       setLocalLeaders([...leaders]);
       setLocalGallery([...gallery]);
-      setLocalMembers([...members]);
       setLocalShoutouts([...shoutouts]);
       setLocalEvents([...events]);
       setLocalHero([...hero]);
@@ -69,13 +75,25 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
       setLocalError(null);
       setSuccessMsg(null);
     }
-  }, [isOpen, pillars, leaders, gallery, members, shoutouts, events, hero, users]);
+  }, [isOpen, pillars, leaders, gallery, shoutouts, events, hero, users]);
 
   React.useEffect(() => {
     setSelectedItemId(null);
     setIsAddingNew(false);
     setLocalError(null);
   }, [activeTab]);
+
+  // Load prospective member applications when that tab is opened
+  React.useEffect(() => {
+    if (isOpen && activeTab === 'applications') {
+      setApplicationsLoading(true);
+      setApplicationsError(null);
+      fetchMemberApplications()
+        .then(setApplications)
+        .catch((err: any) => setApplicationsError(err.message || 'Failed to load applications'))
+        .finally(() => setApplicationsLoading(false));
+    }
+  }, [isOpen, activeTab]);
 
   if (!isOpen) return null;
 
@@ -95,8 +113,6 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
         await updateSection('leaders', localLeaders);
       } else if (tab === 'gallery') {
         await updateSection('gallery', localGallery);
-      } else if (tab === 'members') {
-        await updateSection('members', localMembers);
       } else if (tab === 'shoutouts') {
         await updateSection('shoutouts', localShoutouts);
       } else if (tab === 'events') {
@@ -123,7 +139,6 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
         setLocalPillars([...pillars]);
         setLocalLeaders([...leaders]);
         setLocalGallery([...gallery]);
-        setLocalMembers([...members]);
         setLocalShoutouts([...shoutouts]);
         setLocalEvents([...events]);
         setLocalHero([...hero]);
@@ -214,47 +229,25 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
     }
   };
 
-  // MEMBERS CRUD
-  const handleMemberChange = (id: string, field: string, value: any) => {
-    setLocalMembers(prev => prev.map(m => {
-      if (m.id === id) {
-        if (field.startsWith('socials.')) {
-          const socialKey = field.split('.')[1];
-          return {
-            ...m,
-            socials: {
-              ...(m.socials || {}),
-              [socialKey]: value
-            }
-          };
-        }
-        return { ...m, [field]: value };
-      }
-      return m;
-    }));
+  // APPLICATIONS ACTIONS (server-backed, not part of local CmsDatabase state)
+  const handleApplicationStatusChange = async (id: string, status: MemberApplication['status']) => {
+    try {
+      const updated = await updateMemberApplicationStatus(id, status);
+      setApplications(prev => prev.map(a => a.id === id ? updated : a));
+      triggerNotification(`Application marked as ${status}.`);
+    } catch (err: any) {
+      setApplicationsError(err.message || 'Failed to update application status');
+    }
   };
 
-  const handleAddMember = () => {
-    const newMember: Member = {
-      id: `m-${Date.now()}`,
-      name: "New Member Alias",
-      chapter: "Accra",
-      role: "Creative Innovator",
-      image: "https://images.unsplash.com/photo-1539571696357-5a69c17a67c6?auto=format&fit=crop&q=80&w=400&h=400",
-      bio: "Creative description or statement...",
-      joinedDate: "Jul 2026",
-      socials: { twitter: "", instagram: "", github: "" },
-      featured: false
-    };
-    setLocalMembers(prev => [newMember, ...prev]);
-    setSelectedItemId(newMember.id);
-    setIsAddingNew(true);
-  };
-
-  const handleDeleteMember = (id: string) => {
-    if (window.confirm("Are you sure you want to delete this member profile?")) {
-      setLocalMembers(prev => prev.filter(m => m.id !== id));
+  const handleDeleteApplication = async (id: string) => {
+    if (!window.confirm("Are you sure you want to permanently delete this application?")) return;
+    try {
+      await deleteMemberApplication(id);
+      setApplications(prev => prev.filter(a => a.id !== id));
       if (selectedItemId === id) setSelectedItemId(null);
+    } catch (err: any) {
+      setApplicationsError(err.message || 'Failed to delete application');
     }
   };
 
@@ -538,11 +531,11 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                 { type: 'pillars', label: '1. Core Pillars', count: localPillars.length, desc: 'Love, Loyalty, Unity' },
                 { type: 'leaders', label: '2. Leadership', count: localLeaders.length, desc: 'Patrons & Council' },
                 { type: 'gallery', label: '3. Legacy Gallery', count: localGallery.length, desc: 'Milestone Events' },
-                { type: 'members', label: '4. Member Directory', count: localMembers.length, desc: 'Global Crew' },
-                { type: 'shoutouts', label: '5. Shoutout Wall', count: localShoutouts.length, desc: 'Community Voice' },
-                { type: 'events', label: '6. Upcoming Events', count: localEvents.length, desc: 'Concerts & Summits' },
-                { type: 'hero', label: '7. Hero & Branding', count: localHero.length, desc: 'Title, Logo & Stats' },
-                { type: 'users', label: '8. User Accounts', count: localUsers.length, desc: 'Manage CMS Users' }
+                { type: 'shoutouts', label: '4. Shoutout Wall', count: localShoutouts.length, desc: 'Community Voice' },
+                { type: 'events', label: '5. Upcoming Events', count: localEvents.length, desc: 'Concerts & Summits' },
+                { type: 'hero', label: '6. Hero & Branding', count: localHero.length, desc: 'Title, Logo & Stats' },
+                { type: 'users', label: '7. User Accounts', count: localUsers.length, desc: 'Manage CMS Users' },
+                { type: 'applications', label: '8. Applications', count: applications.length, desc: 'Prospective Members' }
               ].map((item) => (
                 <button
                   key={item.type}
@@ -601,12 +594,11 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
 
               {/* Action and Save buttons */}
               <div className="flex items-center gap-3">
-                {activeTab !== 'pillars' && activeTab !== 'hero' && (
+                {activeTab !== 'pillars' && activeTab !== 'hero' && activeTab !== 'applications' && (
                   <button
                     onClick={() => {
                       if (activeTab === 'leaders') handleAddLeader();
                       else if (activeTab === 'gallery') handleAddGalleryItem();
-                      else if (activeTab === 'members') handleAddMember();
                       else if (activeTab === 'shoutouts') handleAddShoutout();
                       else if (activeTab === 'events') handleAddEvent();
                     }}
@@ -617,18 +609,20 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                   </button>
                 )}
 
-                <button
-                  onClick={() => handleSaveSection(activeTab)}
-                  disabled={saveLoading}
-                  className="px-4 py-2 rounded bg-gradient-to-r from-luxury-gold to-luxury-gold-dark text-black font-sans font-black tracking-widest text-[10px] uppercase transition-all shadow-[0_2px_10px_rgba(212,175,55,0.2)] hover:shadow-[0_2px_15px_rgba(212,175,55,0.4)] disabled:opacity-50 flex items-center gap-2 cursor-pointer hover:scale-[1.02]"
-                >
-                  {saveLoading ? (
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                  ) : (
-                    <Save className="w-3.5 h-3.5" />
-                  )}
-                  Save All {activeTab}
-                </button>
+                {activeTab !== 'applications' && (
+                  <button
+                    onClick={() => handleSaveSection(activeTab)}
+                    disabled={saveLoading}
+                    className="px-4 py-2 rounded bg-gradient-to-r from-luxury-gold to-luxury-gold-dark text-black font-sans font-black tracking-widest text-[10px] uppercase transition-all shadow-[0_2px_10px_rgba(212,175,55,0.2)] hover:shadow-[0_2px_15px_rgba(212,175,55,0.4)] disabled:opacity-50 flex items-center gap-2 cursor-pointer hover:scale-[1.02]"
+                  >
+                    {saveLoading ? (
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Save className="w-3.5 h-3.5" />
+                    )}
+                    Save All {activeTab}
+                  </button>
+                )}
               </div>
             </div>
 
@@ -641,7 +635,7 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
             )}
             {successMsg && (
               <div className="bg-green-950/20 border-b border-green-900/30 px-6 py-2.5 text-xs text-green-400 flex items-center gap-2">
-                <Sparkles className="w-4 h-4 text-luxury-gold shrink-0 animate-spin" />
+                <Crown className="w-4 h-4 text-luxury-gold shrink-0 animate-spin" />
                 <span>{successMsg}</span>
               </div>
             )}
@@ -653,7 +647,7 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
               {activeTab === 'pillars' && (
                 <div className="space-y-6 max-w-4xl">
                   <div className="bg-charcoal-card p-4 rounded border border-gray-900 text-xs text-gray-400 leading-relaxed">
-                    🌟 <strong>Core Pillars Info:</strong> Core pillars form the foundational backbone of the Shatta Movement philosophy. For visual safety, these items are mapped specifically to design icons. You can update the titles, quotes, and descriptive copy of each pillar.
+                    🌟 <strong>Core Pillars Info:</strong> Core pillars form the foundational backbone of the De Elites Family philosophy. For visual safety, these items are mapped specifically to design icons. You can update the titles, quotes, and descriptive copy of each pillar.
                   </div>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     {localPillars.map((p, index) => (
@@ -1003,182 +997,6 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                       <div className="py-24 text-center text-gray-500 text-xs">
                         <Image className="w-8 h-8 text-luxury-gold/25 mx-auto mb-3" />
                         Select a milestone event on the left side to edit details or log a new community event.
-                      </div>
-                    )}
-                  </div>
-
-                </div>
-              )}
-
-
-              {/* MEMBERS MODULE VIEW */}
-              {activeTab === 'members' && (
-                <div className="grid grid-cols-3 gap-6 h-full items-start">
-                  
-                  {/* Crew list */}
-                  <div className="col-span-1 bg-charcoal-card rounded border border-gray-900 p-4 space-y-2 max-h-[600px] overflow-y-auto">
-                    <span className="font-sans text-[9px] font-black uppercase tracking-widest text-gray-500 block mb-2">
-                      Sovereign Crew Dossiers
-                    </span>
-                    {localMembers.map((member) => (
-                      <div
-                        key={member.id}
-                        onClick={() => setSelectedItemId(member.id)}
-                        className={`p-2.5 rounded border flex items-center justify-between gap-3 cursor-pointer group transition-all ${
-                          selectedItemId === member.id
-                            ? 'bg-luxury-gold/10 border-luxury-gold/30 text-luxury-gold'
-                            : 'bg-jet-black border-transparent hover:border-gray-800 text-gray-300'
-                        }`}
-                      >
-                        <div className="flex items-center gap-2.5 min-w-0">
-                          <img
-                            src={member.image}
-                            alt={member.name}
-                            referrerPolicy="no-referrer"
-                            className="w-8 h-8 rounded-full object-cover border border-gray-800"
-                          />
-                          <div className="min-w-0">
-                            <h4 className="font-display text-xs font-black uppercase truncate leading-tight">
-                              {member.name}
-                            </h4>
-                            <p className="font-sans text-[9px] text-gray-500">
-                              {member.chapter} • {member.role}
-                            </p>
-                          </div>
-                        </div>
-
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleDeleteMember(member.id);
-                          }}
-                          className="text-gray-600 hover:text-red-400 transition-colors cursor-pointer p-1"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-
-                  {/* Crew editor */}
-                  <div className="col-span-2 bg-charcoal-card rounded border border-gray-900 p-6">
-                    {selectedItemId && localMembers.find(m => m.id === selectedItemId) ? (
-                      (() => {
-                        const m = localMembers.find(m => m.id === selectedItemId)!;
-                        return (
-                          <div className="space-y-4">
-                            <div className="flex justify-between items-center border-b border-gray-900 pb-3 mb-4">
-                              <h3 className="font-display text-sm font-black text-white uppercase tracking-wider">
-                                EDIT SOVEREIGN ELITE DOSSIER
-                              </h3>
-                              <span className="text-[10px] font-mono text-gray-500">
-                                ID: {m.id}
-                              </span>
-                            </div>
-
-                            <div className="grid grid-cols-2 gap-4">
-                              <div className="flex flex-col gap-1.5">
-                                <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">Elite Name / Alias</label>
-                                <input
-                                  type="text"
-                                  value={m.name}
-                                  onChange={(e) => handleMemberChange(m.id, 'name', e.target.value)}
-                                  className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold"
-                                />
-                              </div>
-                              <div className="flex flex-col gap-1.5">
-                                <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">Primary Craft / Profession</label>
-                                <input
-                                  type="text"
-                                  value={m.role}
-                                  onChange={(e) => handleMemberChange(m.id, 'role', e.target.value)}
-                                  className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold"
-                                />
-                              </div>
-                            </div>
-
-                            <div className="grid grid-cols-2 gap-4">
-                              <div className="flex flex-col gap-1.5">
-                                <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">Chapter Residence</label>
-                                <select
-                                  value={m.chapter}
-                                  onChange={(e) => handleMemberChange(m.id, 'chapter', e.target.value)}
-                                  className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold cursor-pointer"
-                                >
-                                  <option value="Accra">Accra</option>
-                                  <option value="Kumasi">Kumasi</option>
-                                  <option value="London">London</option>
-                                  <option value="New York">New York</option>
-                                  <option value="Paris">Paris</option>
-                                </select>
-                              </div>
-                              <div className="flex flex-col gap-1.5">
-                                <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">Affiliation Date</label>
-                                <input
-                                  type="text"
-                                  value={m.joinedDate}
-                                  placeholder="e.g. Jan 2024"
-                                  onChange={(e) => handleMemberChange(m.id, 'joinedDate', e.target.value)}
-                                  className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold"
-                                />
-                              </div>
-                            </div>
-
-                            <ImageUpload
-                              value={m.image}
-                              onChange={(val) => handleMemberChange(m.id, 'image', val)}
-                              label="Sovereign Elite Avatar"
-                              description="Drag and drop or click to upload an avatar photo for this member."
-                              aspectRatio="avatar"
-                            />
-
-                            <div className="flex flex-col gap-1.5">
-                              <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">Elite Bio & Creed</label>
-                              <textarea
-                                value={m.bio}
-                                onChange={(e) => handleMemberChange(m.id, 'bio', e.target.value)}
-                                rows={3}
-                                maxLength={300}
-                                className="bg-jet-black border border-gray-800 rounded px-3 py-2 text-xs text-white focus:outline-none focus:border-luxury-gold resize-none"
-                              />
-                            </div>
-
-                            {/* Social Handles */}
-                            <div className="pt-3 border-t border-gray-900">
-                              <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-500 block mb-2">
-                                Social Handles (Optional URLs)
-                              </label>
-                              <div className="grid grid-cols-3 gap-2">
-                                <input
-                                  type="text"
-                                  placeholder="Instagram Link"
-                                  value={m.socials?.instagram || ''}
-                                  onChange={(e) => handleMemberChange(m.id, 'socials.instagram', e.target.value)}
-                                  className="bg-jet-black border border-gray-800 rounded px-2 py-1.5 text-[10px] text-white focus:outline-none focus:border-luxury-gold"
-                                />
-                                <input
-                                  type="text"
-                                  placeholder="Twitter Link"
-                                  value={m.socials?.twitter || ''}
-                                  onChange={(e) => handleMemberChange(m.id, 'socials.twitter', e.target.value)}
-                                  className="bg-jet-black border border-gray-800 rounded px-2 py-1.5 text-[10px] text-white focus:outline-none focus:border-luxury-gold"
-                                />
-                                <input
-                                  type="text"
-                                  placeholder="GitHub Link"
-                                  value={m.socials?.github || ''}
-                                  onChange={(e) => handleMemberChange(m.id, 'socials.github', e.target.value)}
-                                  className="bg-jet-black border border-gray-800 rounded px-2 py-1.5 text-[10px] text-white focus:outline-none focus:border-luxury-gold"
-                                />
-                              </div>
-                            </div>
-                          </div>
-                        );
-                      })()
-                    ) : (
-                      <div className="py-24 text-center text-gray-500 text-xs">
-                        <MapPin className="w-8 h-8 text-luxury-gold/25 mx-auto mb-3" />
-                        Select a member dossier on the left side to edit details or register a new profile card.
                       </div>
                     )}
                   </div>
@@ -1917,6 +1735,178 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                 </div>
               )}
 
+              {/* APPLICATIONS MODULE VIEW */}
+              {activeTab === 'applications' && (
+                <div className="flex-1 overflow-y-auto max-w-6xl w-full mx-auto space-y-6">
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
+
+                    {/* Applications list card */}
+                    <div className="col-span-1 bg-charcoal-card rounded-lg border border-gray-900 p-6 space-y-4">
+                      <div>
+                        <h4 className="font-display text-xs font-black text-luxury-gold uppercase tracking-widest mb-1">
+                          Prospective Members ({applications.length})
+                        </h4>
+                        <p className="text-[10px] text-gray-500 font-sans">
+                          Submissions from the "Join the Movement" application form on the public site.
+                        </p>
+                      </div>
+
+                      {applicationsLoading ? (
+                        <div className="py-16 text-center text-gray-500 text-xs flex flex-col items-center gap-2">
+                          <Loader2 className="w-6 h-6 animate-spin text-luxury-gold/50" />
+                          Loading applications...
+                        </div>
+                      ) : applications.length === 0 ? (
+                        <div className="py-16 text-center text-gray-500 text-xs">
+                          <UserCheck className="w-8 h-8 text-luxury-gold/25 mx-auto mb-3" />
+                          No applications submitted yet.
+                        </div>
+                      ) : (
+                        <div className="space-y-2 max-h-[500px] overflow-y-auto pr-1">
+                          {applications.map((app) => (
+                            <div
+                              key={app.id}
+                              onClick={() => setSelectedItemId(app.id)}
+                              className={`p-3 rounded border flex items-center justify-between gap-3 cursor-pointer group transition-all ${
+                                selectedItemId === app.id
+                                  ? 'bg-luxury-gold/10 border-luxury-gold/30 text-luxury-gold'
+                                  : 'bg-jet-black border-transparent hover:border-gray-800 text-gray-300'
+                              }`}
+                            >
+                              <div className="min-w-0">
+                                <h4 className="font-display text-xs font-black uppercase truncate leading-tight">
+                                  {app.fullName}
+                                </h4>
+                                <p className="font-sans text-[9px] text-gray-500 truncate">
+                                  {app.occupation} • {app.residence}
+                                </p>
+                                <span className={`inline-block mt-1 text-[8px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded ${
+                                  app.status === 'approved' ? 'bg-green-950/40 text-green-400' :
+                                  app.status === 'rejected' ? 'bg-red-950/40 text-red-400' :
+                                  'bg-gray-800 text-gray-400'
+                                }`}>
+                                  {app.status}
+                                </span>
+                              </div>
+
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDeleteApplication(app.id);
+                                }}
+                                className="text-gray-600 hover:text-red-400 transition-colors cursor-pointer p-1 shrink-0"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Application detail card */}
+                    <div className="col-span-1 lg:col-span-2 bg-charcoal-card rounded-lg border border-gray-900 p-6">
+                      {applicationsError && (
+                        <div className="flex items-center gap-2 text-xs text-red-500 bg-red-500/10 border border-red-500/20 p-3 rounded mb-4">
+                          <AlertCircle className="w-4 h-4 shrink-0" />
+                          <span>{applicationsError}</span>
+                        </div>
+                      )}
+
+                      {selectedItemId && applications.find(a => a.id === selectedItemId) ? (
+                        (() => {
+                          const app = applications.find(a => a.id === selectedItemId)!;
+                          return (
+                            <div className="space-y-5">
+                              <div className="flex justify-between items-center border-b border-gray-900 pb-3 mb-2">
+                                <h3 className="font-display text-sm font-black text-white uppercase tracking-wider">
+                                  {app.fullName} {app.nickname && <span className="text-luxury-gold">"{app.nickname}"</span>}
+                                </h3>
+                                <span className="text-[10px] font-mono text-gray-500">
+                                  Submitted {new Date(app.submittedAt).toLocaleDateString()}
+                                </span>
+                              </div>
+
+                              <div className="grid grid-cols-2 gap-4 text-xs">
+                                <DetailRow label="Date of Birth" value={app.dob} />
+                                <DetailRow label="Gender" value={app.gender} />
+                                <DetailRow label="Occupation" value={app.occupation} />
+                                <DetailRow label="Residence" value={app.residence} />
+                                <DetailRow label="Phone" value={app.phone} icon={<Phone className="w-3 h-3" />} />
+                                <DetailRow label="Email" value={app.email} icon={<Mail className="w-3 h-3" />} />
+                                {app.socialHandles && <DetailRow label="Socials" value={app.socialHandles} />}
+                                {app.referrer && <DetailRow label="Referred By" value={app.referrer} />}
+                                <DetailRow label="Prior Group Member" value={app.priorGroupMember ? (app.priorGroupDetail || 'Yes') : 'No'} />
+                                <DetailRow label="Activity Level" value={app.activityLevel} />
+                                <DetailRow label="Financial Support" value={app.willingToSupportFinancially ? 'Yes' : 'No'} />
+                                <DetailRow label="Agrees to Rules" value={app.agreesToRulesAndDiscipline ? 'Yes' : 'No'} />
+                              </div>
+
+                              <div>
+                                <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-500 block mb-1.5">
+                                  Reason for Joining
+                                </label>
+                                <p className="text-xs text-gray-300 leading-relaxed bg-jet-black border border-gray-900 rounded p-3">
+                                  {app.reasonForJoining}
+                                </p>
+                              </div>
+
+                              {app.contributionAreas.length > 0 && (
+                                <div>
+                                  <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-500 block mb-1.5">
+                                    Contribution Areas
+                                  </label>
+                                  <div className="flex flex-wrap gap-1.5">
+                                    {app.contributionAreas.map((area) => (
+                                      <span key={area} className="text-[9px] font-bold uppercase tracking-wider px-2 py-1 rounded bg-luxury-gold/10 text-luxury-gold border border-luxury-gold/20">
+                                        {area}
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+
+                              <div className="pt-4 border-t border-gray-900 flex flex-wrap items-center gap-2.5">
+                                <button
+                                  onClick={() => handleApplicationStatusChange(app.id, 'approved')}
+                                  disabled={app.status === 'approved'}
+                                  className="px-4 py-2 rounded bg-green-950/30 border border-green-900/40 text-green-400 hover:bg-green-950/50 font-sans font-black tracking-widest text-[10px] uppercase transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5"
+                                >
+                                  <Check className="w-3.5 h-3.5" />
+                                  Approve
+                                </button>
+                                <button
+                                  onClick={() => handleApplicationStatusChange(app.id, 'rejected')}
+                                  disabled={app.status === 'rejected'}
+                                  className="px-4 py-2 rounded bg-red-950/30 border border-red-900/40 text-red-400 hover:bg-red-950/50 font-sans font-black tracking-widest text-[10px] uppercase transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5"
+                                >
+                                  <X className="w-3.5 h-3.5" />
+                                  Reject
+                                </button>
+                                {app.status !== 'pending' && (
+                                  <button
+                                    onClick={() => handleApplicationStatusChange(app.id, 'pending')}
+                                    className="px-4 py-2 rounded bg-jet-black border border-gray-800 text-gray-400 hover:text-white font-sans font-black tracking-widest text-[10px] uppercase transition-colors cursor-pointer"
+                                  >
+                                    Reset to Pending
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })()
+                      ) : (
+                        <div className="py-24 text-center text-gray-500 text-xs">
+                          <UserCheck className="w-8 h-8 text-luxury-gold/25 mx-auto mb-3" />
+                          Select an application on the left side to review its details.
+                        </div>
+                      )}
+                    </div>
+
+                  </div>
+                </div>
+              )}
+
             </div>
           </main>
 
@@ -1924,6 +1914,20 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
 
       </motion.div>
 
+    </div>
+  );
+}
+
+function DetailRow({ label, value, icon }: { label: string; value: string; icon?: React.ReactNode }) {
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="font-sans text-[9px] font-black uppercase tracking-widest text-gray-500">
+        {label}
+      </span>
+      <span className="text-gray-300 flex items-center gap-1.5 break-words">
+        {icon && <span className="text-luxury-gold shrink-0">{icon}</span>}
+        {value}
+      </span>
     </div>
   );
 }

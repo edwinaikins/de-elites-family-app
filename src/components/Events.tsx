@@ -1,6 +1,6 @@
 import React from 'react';
 import { motion } from 'motion/react';
-import { Calendar, MapPin, Clock, Sparkles, ArrowUpRight, Tag } from 'lucide-react';
+import { Calendar, MapPin, Clock, Crown, ArrowUpRight, Tag } from 'lucide-react';
 import { useCms } from '../context/CmsContext';
 
 export default function Events() {
@@ -47,7 +47,7 @@ export default function Events() {
             transition={{ duration: 0.6 }}
             className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-luxury-gold/10 border border-luxury-gold/20 text-luxury-gold text-[10px] font-mono tracking-widest uppercase mb-4"
           >
-            <Sparkles className="w-3.5 h-3.5 animate-pulse" />
+            <Crown className="w-3.5 h-3.5 animate-pulse" />
             <span>Sovereign Assemblies</span>
           </motion.div>
 

@@ -51,7 +51,7 @@ export default function Footer() {
               </div>
             </div>
             <p className="font-sans text-gray-400 text-xs sm:text-sm leading-relaxed mb-6 max-w-sm">
-              The official portal for DE ELITES FAMILY. Born from street-smart royalty, powered by unyielding loyalty, and inspired by the global Shatta Movement Legacy. One Family. One Mission. One Legacy.
+              The official portal for DE ELITES FAMILY. Born from street-smart royalty, powered by unyielding loyalty, and forged in a legacy of our own making. One Family. One Mission. One Legacy.
             </p>
           </div>
 
@@ -64,8 +64,8 @@ export default function Footer() {
               {[
                 { label: 'Who We Are', id: 'who-we-are' },
                 { label: 'Leadership Council', id: 'leadership' },
+                { label: 'Upcoming Events', id: 'events' },
                 { label: 'Legacy Milestones', id: 'legacy-gallery' },
-                { label: 'Member Directory', id: 'members' },
                 { label: 'Shoutout Wall', id: 'shoutouts' }
               ].map((link, index) => (
                 <li key={index}>
@@ -119,7 +119,7 @@ export default function Footer() {
               © 2026 DE ELITES FAMILY. ALL RIGHTS RESERVED.
             </p>
             <p className="font-sans text-[9px] text-gray-700 uppercase tracking-widest mt-1">
-              Inspired by the sovereign blueprint of Shatta Movement Legacy.
+              Forged on our own sovereign blueprint. One Family. One Legacy.
             </p>
           </div>
 

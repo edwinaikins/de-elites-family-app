@@ -81,6 +81,36 @@ async function initDb() {
       );
     `);
 
+    // Prospective member applications live in their own table, deliberately
+    // separate from cms_sections. cms_sections is served in bulk to every
+    // site visitor via GET /api/cms/data, and applications contain personal
+    // data (phone, email, DOB, etc.) that must never appear in that public
+    // payload.
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS member_applications (
+        id TEXT PRIMARY KEY,
+        full_name TEXT NOT NULL,
+        nickname TEXT,
+        dob TEXT NOT NULL,
+        gender TEXT NOT NULL,
+        occupation TEXT NOT NULL,
+        residence TEXT NOT NULL,
+        phone TEXT NOT NULL,
+        email TEXT NOT NULL,
+        social_handles TEXT,
+        referrer TEXT,
+        prior_group_member BOOLEAN NOT NULL DEFAULT false,
+        prior_group_detail TEXT,
+        reason_for_joining TEXT NOT NULL,
+        contribution_areas JSONB NOT NULL DEFAULT '[]'::jsonb,
+        activity_level TEXT NOT NULL,
+        willing_to_support_financially BOOLEAN NOT NULL,
+        agrees_to_rules_and_discipline BOOLEAN NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        submitted_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+    `);
+
     for (const sec of SECTIONS) {
       const existing = await db.query("SELECT 1 FROM cms_sections WHERE section = $1", [sec]);
       if (existing.rowCount === 0) {
@@ -199,6 +229,142 @@ app.post("/api/cms/reset", async (req, res) => {
   } catch (error: any) {
     console.error("Failed to reset CMS data:", error);
     res.status(500).json({ success: false, error: error.message || "Failed to reset database." });
+  }
+});
+
+// --- PROSPECTIVE MEMBER APPLICATIONS ---
+// Kept on a dedicated table/endpoints (see initDb comment above) so this
+// personal data is never included in the public /api/cms/data payload.
+
+function mapApplicationRow(row: any) {
+  return {
+    id: row.id,
+    fullName: row.full_name,
+    nickname: row.nickname || undefined,
+    dob: row.dob,
+    gender: row.gender,
+    occupation: row.occupation,
+    residence: row.residence,
+    phone: row.phone,
+    email: row.email,
+    socialHandles: row.social_handles || undefined,
+    referrer: row.referrer || undefined,
+    priorGroupMember: row.prior_group_member,
+    priorGroupDetail: row.prior_group_detail || undefined,
+    reasonForJoining: row.reason_for_joining,
+    contributionAreas: row.contribution_areas || [],
+    activityLevel: row.activity_level,
+    willingToSupportFinancially: row.willing_to_support_financially,
+    agreesToRulesAndDiscipline: row.agrees_to_rules_and_discipline,
+    status: row.status,
+    submittedAt: row.submitted_at,
+  };
+}
+
+// Public: submit a new application (from the "Join the Movement" form)
+app.post("/api/applications", async (req, res) => {
+  try {
+    const b = req.body || {};
+    const required = ["fullName", "dob", "gender", "occupation", "residence", "phone", "email", "reasonForJoining", "activityLevel"];
+    for (const field of required) {
+      if (!b[field] || typeof b[field] !== "string" || !b[field].trim()) {
+        return res.status(400).json({ success: false, error: `Missing required field: ${field}` });
+      }
+    }
+    if (typeof b.willingToSupportFinancially !== "boolean" || typeof b.agreesToRulesAndDiscipline !== "boolean") {
+      return res.status(400).json({ success: false, error: "willingToSupportFinancially and agreesToRulesAndDiscipline must be provided as booleans." });
+    }
+
+    const id = `app-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const db = getPool();
+    const result = await db.query(
+      `INSERT INTO member_applications (
+        id, full_name, nickname, dob, gender, occupation, residence, phone, email,
+        social_handles, referrer, prior_group_member, prior_group_detail,
+        reason_for_joining, contribution_areas, activity_level,
+        willing_to_support_financially, agrees_to_rules_and_discipline, status
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,$16,$17,$18,'pending')
+      RETURNING *`,
+      [
+        id,
+        b.fullName.trim(),
+        b.nickname?.trim() || null,
+        b.dob,
+        b.gender,
+        b.occupation.trim(),
+        b.residence.trim(),
+        b.phone.trim(),
+        b.email.trim(),
+        b.socialHandles?.trim() || null,
+        b.referrer?.trim() || null,
+        Boolean(b.priorGroupMember),
+        b.priorGroupDetail?.trim() || null,
+        b.reasonForJoining.trim(),
+        JSON.stringify(Array.isArray(b.contributionAreas) ? b.contributionAreas : []),
+        b.activityLevel,
+        b.willingToSupportFinancially,
+        b.agreesToRulesAndDiscipline,
+      ]
+    );
+
+    res.json({ success: true, data: mapApplicationRow(result.rows[0]) });
+  } catch (error: any) {
+    console.error("Failed to submit member application:", error);
+    res.status(500).json({ success: false, error: error.message || "Failed to submit application." });
+  }
+});
+
+// Admin: list all applications, newest first
+// NOTE: like the rest of this CMS, admin routes are not server-side
+// authenticated yet — the CMS login gate is client-side only. This mirrors
+// the existing security posture of /api/cms/update and friends.
+app.get("/api/applications", async (req, res) => {
+  try {
+    const db = getPool();
+    const result = await db.query("SELECT * FROM member_applications ORDER BY submitted_at DESC");
+    res.json({ success: true, data: result.rows.map(mapApplicationRow) });
+  } catch (error: any) {
+    console.error("Failed to fetch member applications:", error);
+    res.status(500).json({ success: false, error: error.message || "Failed to load applications." });
+  }
+});
+
+// Admin: update an application's status (pending/approved/rejected)
+app.patch("/api/applications/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+    if (!["pending", "approved", "rejected"].includes(status)) {
+      return res.status(400).json({ success: false, error: "status must be one of pending, approved, rejected." });
+    }
+    const db = getPool();
+    const result = await db.query(
+      "UPDATE member_applications SET status = $1 WHERE id = $2 RETURNING *",
+      [status, id]
+    );
+    if (result.rowCount === 0) {
+      return res.status(404).json({ success: false, error: "Application not found." });
+    }
+    res.json({ success: true, data: mapApplicationRow(result.rows[0]) });
+  } catch (error: any) {
+    console.error("Failed to update member application:", error);
+    res.status(500).json({ success: false, error: error.message || "Failed to update application." });
+  }
+});
+
+// Admin: delete an application
+app.delete("/api/applications/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const db = getPool();
+    const result = await db.query("DELETE FROM member_applications WHERE id = $1", [id]);
+    if (result.rowCount === 0) {
+      return res.status(404).json({ success: false, error: "Application not found." });
+    }
+    res.json({ success: true });
+  } catch (error: any) {
+    console.error("Failed to delete member application:", error);
+    res.status(500).json({ success: false, error: error.message || "Failed to delete application." });
   }
 });
 

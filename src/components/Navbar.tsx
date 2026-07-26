@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
-import { Award, Menu, X, Flame, Settings } from 'lucide-react';
+import { Award, Menu, X, Flame, LogIn } from 'lucide-react';
 import { useCms } from '../context/CmsContext';
 
 interface NavbarProps {
@@ -68,8 +68,8 @@ export default function Navbar({ onOpenCms }: NavbarProps) {
 
         {/* Desktop Navigation */}
         <div className="hidden md:flex items-center gap-8">
-          {['Who We Are', 'Leadership', 'Legacy Gallery', 'Events', 'Members', 'Shoutouts'].map((tab) => {
-            const id = tab.toLowerCase().replace(' ', '-');
+          {['Who We Are', 'Leadership', 'Events', 'Legacy Gallery', 'Shoutouts'].map((tab) => {
+            const id = tab.toLowerCase().replace(/\s+/g, '-');
             return (
               <button
                 key={tab}
@@ -88,9 +88,9 @@ export default function Navbar({ onOpenCms }: NavbarProps) {
           <button
             onClick={onOpenCms}
             className="p-2.5 rounded bg-charcoal-card border border-gray-800 text-gray-400 hover:text-luxury-gold hover:border-luxury-gold/50 transition-all cursor-pointer flex items-center justify-center hover:scale-105"
-            title="Open CMS Administrator Panel"
+            title="Member Login"
           >
-            <Settings className="w-4 h-4" />
+            <LogIn className="w-4 h-4" />
           </button>
           
           <button
@@ -118,8 +118,8 @@ export default function Navbar({ onOpenCms }: NavbarProps) {
           exit={{ opacity: 0, y: -20 }}
           className="absolute top-full left-0 w-full bg-jet-black/98 border-b border-luxury-gold/20 py-6 px-6 flex flex-col gap-5 md:hidden shadow-[0_10px_30px_rgba(0,0,0,0.95)] animate-fade-in"
         >
-          {['Who We Are', 'Leadership', 'Legacy Gallery', 'Events', 'Members', 'Shoutouts'].map((tab) => {
-            const id = tab.toLowerCase().replace(' ', '-');
+          {['Who We Are', 'Leadership', 'Events', 'Legacy Gallery', 'Shoutouts'].map((tab) => {
+            const id = tab.toLowerCase().replace(/\s+/g, '-');
             return (
               <button
                 key={tab}
@@ -139,8 +139,8 @@ export default function Navbar({ onOpenCms }: NavbarProps) {
               }}
               className="w-full text-center py-3 rounded bg-charcoal-card border border-gray-800 text-white hover:text-luxury-gold font-sans font-black tracking-widest uppercase transition-all duration-300 flex items-center justify-center gap-2"
             >
-              <Settings className="w-4 h-4" />
-              Admin CMS Control
+              <LogIn className="w-4 h-4" />
+              Member Login
             </button>
 
             <button

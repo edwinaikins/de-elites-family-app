@@ -1,19 +1,31 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Filter, Calendar, Award, Sparkles, MapPin, ExternalLink } from 'lucide-react';
+import { Filter, Calendar, Award, Crown, MapPin, ExternalLink } from 'lucide-react';
 import { useCms } from '../context/CmsContext';
 import { GalleryItem } from '../types';
 
 export default function Gallery() {
-  const { gallery } = useCms();
+  const { gallery, events } = useCms();
   const [activeFilter, setActiveFilter] = useState<string>('All');
   const [selectedItem, setSelectedItem] = useState<GalleryItem | null>(null);
 
-  const categories = ['All', 'Legacy', 'Community', 'Philanthropy', 'Movement'];
+  const categories = ['All', 'Legacy', 'Community', 'Philanthropy', 'Movement', 'Events'];
+
+  // Merge event photos into the gallery grid as display-only items, tagged 'Events'
+  const eventGalleryItems: GalleryItem[] = (events || []).map((event) => ({
+    id: `event-${event.id}`,
+    title: event.title,
+    category: 'Events',
+    image: event.image,
+    description: event.description,
+    date: event.date,
+  }));
+
+  const combinedItems = [...gallery, ...eventGalleryItems];
 
   const filteredItems = activeFilter === 'All'
-    ? gallery
-    : gallery.filter(item => item.category === activeFilter);
+    ? combinedItems
+    : combinedItems.filter(item => item.category === activeFilter);
 
   return (
     <section id="legacy-gallery" className="py-24 bg-jet-black relative overflow-hidden border-t border-gray-950">
@@ -123,16 +135,16 @@ export default function Gallery() {
 
       {/* Gallery Spotlight Modal */}
       {selectedItem && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/95 backdrop-blur-md">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/95 backdrop-blur-md">
           <motion.div
             initial={{ opacity: 0, y: 30 }}
             animate={{ opacity: 1, y: 0 }}
-            className="bg-charcoal-card border border-luxury-gold/40 max-w-3xl w-full rounded-lg overflow-hidden relative shadow-[0_20px_50px_rgba(0,0,0,0.95)]"
+            className="bg-charcoal-card border border-luxury-gold/40 max-w-3xl w-full max-h-[92vh] sm:max-h-[90vh] rounded-lg overflow-y-auto overscroll-contain relative shadow-[0_20px_50px_rgba(0,0,0,0.95)]"
           >
             {/* Close */}
             <button
               onClick={() => setSelectedItem(null)}
-              className="absolute top-4 right-4 text-white hover:text-luxury-gold font-sans font-bold text-lg p-2 transition-colors cursor-pointer z-20 bg-black/60 rounded-full w-10 h-10 flex items-center justify-center"
+              className="absolute top-3 right-3 sm:top-4 sm:right-4 text-white hover:text-luxury-gold font-sans font-bold text-lg p-2 transition-colors cursor-pointer z-20 bg-black/60 rounded-full w-9 h-9 sm:w-10 sm:h-10 flex items-center justify-center"
             >
               ✕
             </button>
@@ -145,25 +157,25 @@ export default function Gallery() {
                 referrerPolicy="no-referrer"
                 className="w-full h-full object-cover"
               />
-              <span className="absolute bottom-4 left-4 font-sans text-[10px] font-black uppercase tracking-[0.25em] text-black bg-luxury-gold px-3 py-1 rounded">
+              <span className="absolute bottom-3 left-3 sm:bottom-4 sm:left-4 font-sans text-[10px] font-black uppercase tracking-[0.25em] text-black bg-luxury-gold px-3 py-1 rounded">
                 {selectedItem.category}
               </span>
             </div>
 
             {/* Details */}
-            <div className="p-8">
-              <div className="flex items-center gap-2.5 text-gray-500 mb-3">
+            <div className="p-5 sm:p-8">
+              <div className="flex flex-wrap items-center gap-2.5 text-gray-500 mb-3">
                 <Calendar className="w-4 h-4 text-luxury-gold" />
                 <span className="font-mono text-xs uppercase tracking-widest text-gray-400 font-bold">
                   {selectedItem.date}
                 </span>
-                <span className="text-gray-700">•</span>
+                <span className="text-gray-700 hidden sm:inline">•</span>
                 <span className="font-sans text-xs uppercase tracking-widest text-luxury-gold font-bold flex items-center gap-1">
-                  <Award className="w-3.5 h-3.5" /> Approved Project
+                  <Award className="w-3.5 h-3.5" /> {selectedItem.category === 'Events' ? 'Upcoming Event' : 'Approved Project'}
                 </span>
               </div>
 
-              <h3 className="font-display text-2xl sm:text-3xl font-black text-white uppercase tracking-tight mb-4">
+              <h3 className="font-display text-xl sm:text-2xl md:text-3xl font-black text-white uppercase tracking-tight mb-4">
                 {selectedItem.title}
               </h3>
 
@@ -174,28 +186,30 @@ export default function Gallery() {
               </p>
 
               {/* Impact Callout block */}
-              <div className="mt-8 bg-jet-black/60 border border-gray-900/80 p-5 rounded flex items-start gap-4">
+              <div className="mt-8 bg-jet-black/60 border border-gray-900/80 p-4 sm:p-5 rounded flex items-start gap-4">
                 <div className="w-10 h-10 rounded-full bg-luxury-gold/5 border border-luxury-gold/20 flex items-center justify-center shrink-0">
-                  <Sparkles className="w-5 h-5 text-luxury-gold" />
+                  <Crown className="w-5 h-5 text-luxury-gold" />
                 </div>
                 <div>
                   <h4 className="font-display text-xs font-black uppercase tracking-widest text-luxury-gold">
-                    Movement Impact Summary
+                    {selectedItem.category === 'Events' ? 'Assembly Overview' : 'Movement Impact Summary'}
                   </h4>
                   <p className="font-sans text-xs text-gray-400 mt-1 leading-relaxed">
-                    This project is a cornerstone of our community empowerment model. Fully supported by collective contributions, De Elites Family ensures direct allocation, transparent auditing, and sustainable execution for all local initiatives.
+                    {selectedItem.category === 'Events'
+                      ? 'This is one of our upcoming sovereign assemblies. Head to the Upcoming Events section for full date, time, and location details.'
+                      : 'This project is a cornerstone of our community empowerment model. Fully supported by collective contributions, De Elites Family ensures direct allocation, transparent auditing, and sustainable execution for all local initiatives.'}
                   </p>
                 </div>
               </div>
             </div>
 
             {/* Modal Footer */}
-            <div className="bg-jet-black/80 p-6 border-t border-gray-900 flex justify-end gap-3">
+            <div className="bg-jet-black/80 p-4 sm:p-6 border-t border-gray-900 flex justify-end gap-3 sticky bottom-0">
               <button
                 onClick={() => setSelectedItem(null)}
                 className="px-6 py-2.5 bg-luxury-gold hover:bg-luxury-gold-dark text-black font-sans font-black tracking-widest text-xs uppercase rounded transition-colors cursor-pointer"
               >
-                Close Project
+                Close
               </button>
             </div>
           </motion.div>

@@ -1,9 +1,11 @@
 import React from 'react';
 import { motion } from 'motion/react';
-import { Sparkles, ShieldCheck, Flame, Users } from 'lucide-react';
+import { Crown, ShieldCheck, Flame, Users } from 'lucide-react';
 import { useCms } from '../context/CmsContext';
+import JoinApplicationModal from './JoinApplicationModal';
 
 export default function Hero() {
+  const [isApplicationOpen, setIsApplicationOpen] = React.useState(false);
   const { hero } = useCms();
   const heroItem = hero?.[0] || {
     id: 'hero-config',
@@ -72,9 +74,9 @@ export default function Hero() {
             variants={itemVariants}
             className="flex items-center gap-2 px-4 py-1.5 rounded-full bg-charcoal-card border border-luxury-gold/30 gold-glow mb-6"
           >
-            <Sparkles className="w-4 h-4 text-luxury-gold animate-pulse" />
+            <Crown className="w-4 h-4 text-luxury-gold animate-pulse" />
             <span className="font-sans text-[11px] font-black uppercase tracking-[0.25em] text-luxury-gold">
-              Shatta Movement Legacy
+              The Sovereign Legacy Movement
             </span>
           </motion.div>
 
@@ -108,10 +110,7 @@ export default function Hero() {
             className="flex flex-col sm:flex-row items-center gap-4 justify-center w-full sm:w-auto"
           >
             <button
-              onClick={() => {
-                const wall = document.getElementById('shoutouts');
-                if (wall) wall.scrollIntoView({ behavior: 'smooth' });
-              }}
+              onClick={() => setIsApplicationOpen(true)}
               className="w-full sm:w-auto px-8 py-4 bg-gradient-to-r from-luxury-gold to-luxury-gold-dark text-black font-sans font-black tracking-widest text-xs uppercase rounded transition-all duration-300 shadow-[0_4px_20px_rgba(212,175,55,0.25)] hover:shadow-[0_0_30px_rgba(212,175,55,0.55)] hover:scale-105 cursor-pointer"
             >
               {heroItem.joinButtonText}
@@ -153,6 +152,8 @@ export default function Hero() {
           </motion.div>
         </motion.div>
       </div>
+
+      <JoinApplicationModal isOpen={isApplicationOpen} onClose={() => setIsApplicationOpen(false)} />
 
     </section>
   );

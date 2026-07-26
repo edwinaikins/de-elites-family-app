@@ -44,7 +44,7 @@ export default function WhoWeAre() {
           </h2>
           <div className="h-[2px] w-20 bg-luxury-gold mb-6 md:mx-0 mx-auto" />
           <p className="font-sans text-gray-400 text-sm sm:text-base leading-relaxed">
-            De Elites Family is built on foundational principles that shape our collective destiny. Inspired by the resilience and street-smart sovereign royalty of the Shatta Movement legacy, we walk our path with high honor, deep accountability, and absolute brotherhood.
+            De Elites Family is built on foundational principles that shape our collective destiny. Inspired by resilience and street-smart sovereign royalty of our own making, we walk our path with high honor, deep accountability, and absolute brotherhood.
           </p>
         </div>
 

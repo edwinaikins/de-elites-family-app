@@ -23,7 +23,7 @@ export interface Leader {
 export interface GalleryItem {
   id: string;
   title: string;
-  category: 'Legacy' | 'Community' | 'Philanthropy' | 'Movement';
+  category: 'Legacy' | 'Community' | 'Philanthropy' | 'Movement' | 'Events';
   image: string;
   description: string;
   date: string;
@@ -91,6 +91,29 @@ export interface CmsUser {
   username: string;
   password?: string;
   role: 'admin' | 'moderator';
+}
+
+export interface MemberApplication {
+  id: string;
+  fullName: string;
+  nickname?: string;
+  dob: string;
+  gender: string;
+  occupation: string;
+  residence: string;
+  phone: string;
+  email: string;
+  socialHandles?: string;
+  referrer?: string;
+  priorGroupMember: boolean;
+  priorGroupDetail?: string;
+  reasonForJoining: string;
+  contributionAreas: string[];
+  activityLevel: 'Very Active' | 'Moderately Active' | 'Occasionally Active';
+  willingToSupportFinancially: boolean;
+  agreesToRulesAndDiscipline: boolean;
+  status: 'pending' | 'approved' | 'rejected';
+  submittedAt: string;
 }
 
 
