@@ -466,7 +466,7 @@ function Field({
   );
 }
 
-function RadioPill({ label, checked, onClick }: { label: string; checked: boolean; onClick: () => void }) {
+const RadioPill: React.FC<{ label: string; checked: boolean; onClick: () => void }> = ({ label, checked, onClick }) => {
   return (
     <button
       type="button"
@@ -480,4 +480,4 @@ function RadioPill({ label, checked, onClick }: { label: string; checked: boolea
       {label}
     </button>
   );
-}
+};
