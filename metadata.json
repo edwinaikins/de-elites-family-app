@@ -1,0 +1,6 @@
+{
+  "name": "De Elites Family",
+  "description": "The official web portal for DE ELITES FAMILY - a prestigious community movement inspired by the Shatta Movement Legacy. ONE FAMILY. ONE MISSION. ONE LEGACY.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

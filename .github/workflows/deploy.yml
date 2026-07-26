@@ -1,0 +1,65 @@
+name: Deploy to Ubicloud VM
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Type-check
+        run: npm run lint
+
+      - name: Build client + server bundle
+        run: npm run build
+
+      - name: Install deploy SSH key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.VM_SSH_PRIVATE_KEY }}
+
+      - name: Trust VM host key
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "${{ secrets.VM_HOST }}" >> ~/.ssh/known_hosts
+
+      # Ship everything except node_modules/.git/.env* — the VM keeps its own
+      # .env (with DATABASE_URL) untouched across deploys, and installs its
+      # own production node_modules below rather than us shipping them over
+      # the wire.
+      - name: Sync source + built assets to the VM
+        run: |
+          rsync -avz --delete \
+            --exclude 'node_modules' \
+            --exclude '.git' \
+            --exclude '.env*' \
+            ./ "${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}:${{ secrets.VM_APP_DIR }}/"
+
+      - name: Install production deps & restart service on the VM
+        env:
+          VM_USER: ${{ secrets.VM_USER }}
+          VM_HOST: ${{ secrets.VM_HOST }}
+          VM_APP_DIR: ${{ secrets.VM_APP_DIR }}
+        run: |
+          ssh "$VM_USER@$VM_HOST" "
+            set -e
+            export XDG_RUNTIME_DIR=/run/user/\$(id -u)
+            cd '$VM_APP_DIR'
+            npm install --omit=dev
+            systemctl --user restart de-elites-family
+            sleep 2
+            curl -sf http://127.0.0.1:3000/api/health
+          "

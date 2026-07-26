@@ -1,0 +1,29 @@
+# DE ELITES FAMILY — systemd USER service (no sudo needed to manage it).
+#
+# Installed by deploy/setup-vm.sh at:
+#   ~/.config/systemd/user/de-elites-family.service
+#
+# Managed with:
+#   systemctl --user status|restart|stop de-elites-family
+#   journalctl --user -u de-elites-family -f      (tail logs)
+#
+# Runs as a user service (rather than a system-wide sudo service) so the
+# CI/CD pipeline can restart it over SSH without needing passwordless sudo
+# on the VM — a meaningfully smaller trust footprint for a deploy key.
+# `loginctl enable-linger` (done once in setup-vm.sh) keeps it running even
+# with no active SSH session, and starts it automatically on VM reboot.
+
+[Unit]
+Description=DE ELITES FAMILY web app
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/apps/de-elites-family
+EnvironmentFile=%h/apps/de-elites-family/.env
+ExecStart=/usr/bin/node dist/server.cjs
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
