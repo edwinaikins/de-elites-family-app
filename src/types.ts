@@ -57,6 +57,16 @@ export interface Member {
   featured?: boolean;
 }
 
+// One photo or video belonging to a specific event's own gallery — distinct
+// from the event's single `image` banner. Uploaded in bulk via the CMS
+// Events tab; shown as a "View Gallery" lightbox on that event's card and
+// also merged into the public Legacy Gallery, tagged with the event.
+export interface EventMediaItem {
+  id: string;
+  url: string;
+  isVideo?: boolean;
+}
+
 export interface EliteEvent {
   id: string;
   title: string;
@@ -73,6 +83,8 @@ export interface EliteEvent {
   // Left unset or 0 for free events.
   price?: number;
   currency?: string;
+  // This event's own photo/video collection (see EventMediaItem above).
+  media?: EventMediaItem[];
 }
 
 export interface HeroConfig {

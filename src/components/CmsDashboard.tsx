@@ -10,7 +10,7 @@ import {
 import { useCms } from '../context/CmsContext';
 import { ImageUpload } from './ImageUpload';
 import { BulkMediaUpload } from './BulkMediaUpload';
-import { Pillar, Leader, GalleryItem, EliteEvent, HeroConfig, CmsUser, MemberApplication, MemberAccount, WelfareDuesPayment, EventPayment, AdminPaymentRecord } from '../types';
+import { Pillar, Leader, GalleryItem, EliteEvent, EventMediaItem, HeroConfig, CmsUser, MemberApplication, MemberAccount, WelfareDuesPayment, EventPayment, AdminPaymentRecord } from '../types';
 import { fetchMemberApplications, updateMemberApplicationStatus, deleteMemberApplication, UploadedMediaItem } from '../lib/cmsClient';
 import {
   fetchAllMemberAccounts, createMemberAccount, updateMemberAccount, deleteMemberAccount,
@@ -676,6 +676,27 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
       setLocalEvents(prev => prev.filter(e => e.id !== id));
       if (selectedItemId === id) setSelectedItemId(null);
     }
+  };
+
+  // Appends bulk-uploaded photos/videos to this specific event's own media
+  // collection (distinct from the single banner `image`). Shown as a "View
+  // Gallery" lightbox on the event's public card, and merged into the
+  // Legacy Gallery tagged with this event once saved.
+  const handleEventMediaUpload = (eventId: string, items: UploadedMediaItem[]) => {
+    if (!items.length) return;
+    const newMedia: EventMediaItem[] = items.map((it, i) => ({
+      id: `em-${Date.now()}-${i}`,
+      url: it.url,
+      isVideo: it.isVideo,
+    }));
+    setLocalEvents(prev => prev.map(e => e.id === eventId ? { ...e, media: [...(e.media || []), ...newMedia] } : e));
+    triggerNotification(
+      `${newMedia.length} file${newMedia.length === 1 ? '' : 's'} added to this event's gallery — click "Save All events" to publish.`
+    );
+  };
+
+  const handleDeleteEventMedia = (eventId: string, mediaId: string) => {
+    setLocalEvents(prev => prev.map(e => e.id === eventId ? { ...e, media: (e.media || []).filter(m => m.id !== mediaId) } : e));
   };
 
   const handleHeroChange = (field: keyof HeroConfig, value: string) => {
@@ -1528,6 +1549,42 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                               description="Drag and drop or click to upload a banner image for this event."
                               aspectRatio="banner"
                             />
+
+                            <div className="space-y-3">
+                              <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">
+                                Event Photos & Videos {event.media && event.media.length > 0 ? `(${event.media.length})` : ''}
+                              </label>
+                              <BulkMediaUpload onUploaded={(items) => handleEventMediaUpload(event.id, items)} />
+                              {event.media && event.media.length > 0 && (
+                                <div className="grid grid-cols-4 sm:grid-cols-6 gap-2">
+                                  {event.media.map((m) => (
+                                    <div
+                                      key={m.id}
+                                      className="relative group aspect-square rounded overflow-hidden border border-gray-800 bg-black"
+                                    >
+                                      {m.isVideo ? (
+                                        <div className="w-full h-full flex items-center justify-center">
+                                          <Film className="w-4 h-4 text-luxury-gold" />
+                                        </div>
+                                      ) : (
+                                        <img src={m.url} alt="" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
+                                      )}
+                                      <button
+                                        type="button"
+                                        onClick={() => handleDeleteEventMedia(event.id, m.id)}
+                                        className="absolute inset-0 bg-black/70 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity cursor-pointer"
+                                        title="Remove from this event's gallery"
+                                      >
+                                        <Trash2 className="w-4 h-4 text-red-400" />
+                                      </button>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                              <p className="text-[9px] text-gray-500 font-sans">
+                                Shown as a "View Gallery" lightbox on this event's public card, and merged into the Legacy Gallery tagged with this event.
+                              </p>
+                            </div>
 
                             <div className="flex flex-col gap-1.5">
                               <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">Description</label>

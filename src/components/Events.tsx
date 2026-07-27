@@ -1,14 +1,20 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { motion } from 'motion/react';
-import { Calendar, MapPin, Clock, Crown, ArrowUpRight, Tag, CreditCard, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
+import {
+  Calendar, MapPin, Clock, Crown, ArrowUpRight, Tag, CreditCard, CheckCircle2, AlertCircle, Loader2,
+  Images, ChevronLeft, ChevronRight, PlayCircle,
+} from 'lucide-react';
 import { useCms } from '../context/CmsContext';
 import { useEventPayments } from '../hooks/useEventPayments';
 import { usePaymentsConfig } from '../hooks/usePaymentsConfig';
+import { EliteEvent } from '../types';
 
 export default function Events() {
   const { events } = useCms();
   const { paidEventIds, payingId, errorById, payForEvent } = useEventPayments();
   const { mock: mockPayments } = usePaymentsConfig();
+  const [galleryEvent, setGalleryEvent] = useState<EliteEvent | null>(null);
+  const [activeMediaIndex, setActiveMediaIndex] = useState(0);
 
   // Stagger animation container
   const containerVariants = {
@@ -144,6 +150,17 @@ export default function Events() {
                         <span className="truncate" title={event.location}>{event.location}</span>
                       </div>
                     </div>
+
+                    {event.media && event.media.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => { setGalleryEvent(event); setActiveMediaIndex(0); }}
+                        className="w-full flex items-center justify-center gap-2 py-2.5 rounded border border-gray-800 hover:border-luxury-gold/50 text-gray-400 hover:text-luxury-gold text-[10px] font-sans font-black uppercase tracking-widest transition-colors cursor-pointer"
+                      >
+                        <Images className="w-3.5 h-3.5" />
+                        View Gallery ({event.media.length})
+                      </button>
+                    )}
                   </div>
                 </div>
 
@@ -197,6 +214,105 @@ export default function Events() {
         )}
 
       </div>
+
+      {/* Per-event photo/video gallery lightbox */}
+      {galleryEvent && (() => {
+        const media = galleryEvent.media || [];
+        const active = media[activeMediaIndex];
+        return (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/95 backdrop-blur-md"
+            onClick={() => setGalleryEvent(null)}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 30 }}
+              animate={{ opacity: 1, y: 0 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-charcoal-card border border-luxury-gold/40 max-w-4xl w-full max-h-[92vh] rounded-lg overflow-y-auto overscroll-contain relative shadow-[0_20px_50px_rgba(0,0,0,0.95)]"
+            >
+              <button
+                onClick={() => setGalleryEvent(null)}
+                className="absolute top-3 right-3 sm:top-4 sm:right-4 text-white hover:text-luxury-gold font-sans font-bold text-lg p-2 transition-colors cursor-pointer z-20 bg-black/60 rounded-full w-9 h-9 sm:w-10 sm:h-10 flex items-center justify-center"
+              >
+                ✕
+              </button>
+
+              {/* Main viewer */}
+              <div className="relative w-full aspect-video bg-black">
+                {active && (
+                  active.isVideo ? (
+                    <video
+                      key={active.id}
+                      src={active.url}
+                      controls
+                      autoPlay
+                      className="w-full h-full object-contain"
+                    />
+                  ) : (
+                    <img
+                      key={active.id}
+                      src={active.url}
+                      alt={galleryEvent.title}
+                      referrerPolicy="no-referrer"
+                      className="w-full h-full object-contain"
+                    />
+                  )
+                )}
+
+                {media.length > 1 && (
+                  <>
+                    <button
+                      onClick={() => setActiveMediaIndex((i) => (i - 1 + media.length) % media.length)}
+                      className="absolute left-2 top-1/2 -translate-y-1/2 bg-black/60 hover:bg-black/80 text-white rounded-full w-9 h-9 flex items-center justify-center cursor-pointer transition-colors"
+                    >
+                      <ChevronLeft className="w-5 h-5" />
+                    </button>
+                    <button
+                      onClick={() => setActiveMediaIndex((i) => (i + 1) % media.length)}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 bg-black/60 hover:bg-black/80 text-white rounded-full w-9 h-9 flex items-center justify-center cursor-pointer transition-colors"
+                    >
+                      <ChevronRight className="w-5 h-5" />
+                    </button>
+                  </>
+                )}
+              </div>
+
+              {/* Header + thumbnails */}
+              <div className="p-5 sm:p-6">
+                <h3 className="font-display text-lg sm:text-xl font-black text-white uppercase tracking-tight mb-1">
+                  {galleryEvent.title}
+                </h3>
+                <p className="font-mono text-[10px] uppercase tracking-widest text-gray-500 mb-4">
+                  {galleryEvent.date} • {media.length} file{media.length === 1 ? '' : 's'}
+                </p>
+
+                {media.length > 1 && (
+                  <div className="grid grid-cols-5 sm:grid-cols-8 gap-2">
+                    {media.map((m, i) => (
+                      <button
+                        key={m.id}
+                        type="button"
+                        onClick={() => setActiveMediaIndex(i)}
+                        className={`relative aspect-square rounded overflow-hidden border-2 transition-all cursor-pointer ${
+                          i === activeMediaIndex ? 'border-luxury-gold' : 'border-transparent opacity-60 hover:opacity-100'
+                        }`}
+                      >
+                        {m.isVideo ? (
+                          <div className="w-full h-full bg-black flex items-center justify-center">
+                            <PlayCircle className="w-4 h-4 text-luxury-gold" />
+                          </div>
+                        ) : (
+                          <img src={m.url} alt="" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          </div>
+        );
+      })()}
     </section>
   );
 }

@@ -11,15 +11,33 @@ export default function Gallery() {
 
   const categories = ['All', 'Legacy', 'Community', 'Philanthropy', 'Movement', 'Events'];
 
-  // Merge event photos into the gallery grid as display-only items, tagged 'Events'
-  const eventGalleryItems: GalleryItem[] = (events || []).map((event) => ({
-    id: `event-${event.id}`,
-    title: event.title,
-    category: 'Events',
-    image: event.image,
-    description: event.description,
-    date: event.date,
-  }));
+  // Merge event photos/videos into the gallery grid as display-only items,
+  // tagged 'Events'. An event with its own uploaded gallery (event.media,
+  // set via the CMS Events tab) contributes one card per uploaded photo or
+  // video, all sharing that event's title/date. An event with no uploaded
+  // media yet falls back to a single teaser card using its banner image, so
+  // every event still shows up here even before anyone's uploaded coverage.
+  const eventGalleryItems: GalleryItem[] = (events || []).flatMap((event) => {
+    if (event.media && event.media.length > 0) {
+      return event.media.map((m) => ({
+        id: `event-${event.id}-${m.id}`,
+        title: event.title,
+        category: 'Events',
+        image: m.url,
+        description: event.description,
+        date: event.date,
+        isVideo: m.isVideo,
+      }));
+    }
+    return [{
+      id: `event-${event.id}`,
+      title: event.title,
+      category: 'Events',
+      image: event.image,
+      description: event.description,
+      date: event.date,
+    }];
+  });
 
   const combinedItems = [...gallery, ...eventGalleryItems];
 
