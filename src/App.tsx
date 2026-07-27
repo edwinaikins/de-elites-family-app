@@ -16,17 +16,19 @@ import UpcomingEventBanner from './components/UpcomingEventBanner';
 import MemberPortalModal from './components/MemberPortalModal';
 import JoinApplicationModal from './components/JoinApplicationModal';
 import MockPaystackCheckout from './components/MockPaystackCheckout';
+import WelfarePage from './components/WelfarePage';
 import { CmsProvider } from './context/CmsContext';
 import { MemberAuthProvider } from './context/MemberAuthContext';
 
 function AppContent() {
   const [cmsOpen, setCmsOpen] = useState(false);
   const [joinOpen, setJoinOpen] = useState(false);
+  const [welfareOpen, setWelfareOpen] = useState(false);
 
   return (
     <div className="bg-jet-black min-h-screen text-white font-sans antialiased selection:bg-luxury-gold selection:text-black">
       {/* Sticky Premium Navigation Header */}
-      <Navbar onOpenJoin={() => setJoinOpen(true)} />
+      <Navbar onOpenJoin={() => setJoinOpen(true)} onOpenWelfare={() => setWelfareOpen(true)} />
 
       {/* Main Container */}
       <main className="relative">
@@ -51,6 +53,16 @@ function AppContent() {
       {/* Shared Prospective Member Application modal — opened from both the
           Navbar's "Join the Movement" button and the Hero's join button. */}
       <JoinApplicationModal isOpen={joinOpen} onClose={() => setJoinOpen(false)} />
+
+      {/* Dedicated Welfare & Benefits page — opened from the Navbar's
+          "Welfare" link, as a full-screen overlay (this app has no client
+          router, so "dedicated page" here means a full-viewport takeover,
+          matching how the Member Portal and CMS already work). */}
+      <WelfarePage
+        isOpen={welfareOpen}
+        onClose={() => setWelfareOpen(false)}
+        onOpenJoin={() => { setWelfareOpen(false); setJoinOpen(true); }}
+      />
 
       {/* Section 7: Responsive Premium Footer */}
       <Footer onOpenAdmin={() => setCmsOpen(true)} />

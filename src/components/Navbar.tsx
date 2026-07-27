@@ -6,12 +6,13 @@ import { useMemberAuth } from '../context/MemberAuthContext';
 
 interface NavbarProps {
   onOpenJoin: () => void;
+  onOpenWelfare: () => void;
 }
 
 // Admin/CMS access was intentionally moved out of the main nav (see Footer's
 // subtle "Staff Login" link) now that this button is a real member portal
 // entry point for regular family members, not the CMS admin gate.
-export default function Navbar({ onOpenJoin }: NavbarProps) {
+export default function Navbar({ onOpenJoin, onOpenWelfare }: NavbarProps) {
   const [isScrolled, setIsScrolled] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const { hero } = useCms();
@@ -86,6 +87,13 @@ export default function Navbar({ onOpenJoin }: NavbarProps) {
               </button>
             );
           })}
+          <button
+            onClick={onOpenWelfare}
+            className="font-sans text-sm font-semibold text-gray-300 hover:text-luxury-gold tracking-wide transition-colors relative py-1 group cursor-pointer"
+          >
+            Welfare
+            <span className="absolute bottom-0 left-0 w-0 h-[2px] bg-luxury-gold transition-all duration-300 group-hover:w-full" />
+          </button>
         </div>
 
         {/* Desktop CTA */}
@@ -136,7 +144,16 @@ export default function Navbar({ onOpenJoin }: NavbarProps) {
               </button>
             );
           })}
-          
+          <button
+            onClick={() => {
+              setMobileMenuOpen(false);
+              onOpenWelfare();
+            }}
+            className="font-sans text-left text-lg font-bold text-gray-200 hover:text-luxury-gold transition-colors py-1 border-b border-gray-900"
+          >
+            Welfare
+          </button>
+
           <div className="flex flex-col gap-2.5 mt-2">
             <button
               onClick={() => {
