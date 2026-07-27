@@ -1,11 +1,13 @@
 import express from "express";
 import path from "path";
+import fs from "fs";
 import "dotenv/config";
 import { createServer as createViteServer } from "vite";
 import pg from "pg";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import crypto from "crypto";
+import multer from "multer";
 import { PILLARS, LEADERSHIP, GALLERY_ITEMS, DEFAULT_SHOUTOUTS, DEFAULT_MEMBERS, DEFAULT_EVENTS, DEFAULT_HERO } from "./src/data";
 
 const { Pool } = pg;
@@ -25,6 +27,53 @@ app.use(
     },
   })
 );
+
+// --- LEGACY GALLERY: bulk photo/video uploads ---
+//
+// Uploaded gallery media is written to disk (unlike other CMS images, which
+// are stored as Base64 directly inside the cms_sections JSON blob) because
+// event photos/videos can be tens of megabytes each, and cms_sections is
+// fetched in bulk by every visitor on every page load — embedding large
+// media there would make the whole site slow to load. Files live under
+// UPLOADS_DIR/gallery and are served statically at /uploads/gallery/<file>;
+// only the resulting small URL string is stored in a gallery item's `image`
+// field (see GalleryItem.isVideo for how the frontend knows to render a
+// <video> instead of an <img> for that URL).
+//
+// UPLOADS_DIR defaults to ./uploads (inside the app's working directory) but
+// can be pointed elsewhere via the UPLOADS_DIR env var — useful if your
+// deploy process ever does a clean checkout/clone that would wipe an in-repo
+// uploads folder; pointing it at a directory outside the deployed app folder
+// keeps previously uploaded media safe across deploys.
+const UPLOADS_DIR = process.env.UPLOADS_DIR
+  ? path.resolve(process.env.UPLOADS_DIR)
+  : path.join(process.cwd(), "uploads");
+const GALLERY_UPLOADS_DIR = path.join(UPLOADS_DIR, "gallery");
+fs.mkdirSync(GALLERY_UPLOADS_DIR, { recursive: true });
+
+app.use("/uploads", express.static(UPLOADS_DIR));
+
+const galleryUploadStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, GALLERY_UPLOADS_DIR),
+  filename: (_req, file, cb) => {
+    const ext =
+      path.extname(file.originalname).toLowerCase() ||
+      (file.mimetype.startsWith("video/") ? ".mp4" : ".jpg");
+    cb(null, `${Date.now()}-${crypto.randomBytes(6).toString("hex")}${ext}`);
+  },
+});
+
+const galleryUpload = multer({
+  storage: galleryUploadStorage,
+  limits: { fileSize: 150 * 1024 * 1024, files: 20 },
+  fileFilter: (_req, file, cb) => {
+    if (file.mimetype.startsWith("image/") || file.mimetype.startsWith("video/")) {
+      cb(null, true);
+    } else {
+      cb(new Error("Only image and video files are allowed."));
+    }
+  },
+});
 
 // --- MEMBER AUTH / PAYMENTS CONFIG ---
 
@@ -374,6 +423,35 @@ app.post("/api/cms/reset", async (req, res) => {
     console.error("Failed to reset CMS data:", error);
     res.status(500).json({ success: false, error: error.message || "Failed to reset database." });
   }
+});
+
+// Bulk-upload photos/videos for the Legacy Gallery. Returns one
+// { url, isVideo, originalName } per uploaded file — the CMS creates one
+// gallery item per file client-side and the admin reviews/edits details
+// (title, category, date, description) before hitting "Save All gallery".
+// Multer is invoked manually (rather than as ordinary route middleware) so
+// upload errors — bad file type, over the size limit — come back as a normal
+// JSON error response instead of an unhandled exception.
+app.post("/api/admin/gallery/upload", (req, res) => {
+  galleryUpload.array("files", 20)(req, res, (err: any) => {
+    if (err) {
+      const message =
+        err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE"
+          ? "One or more files exceed the 150MB per-file limit."
+          : err.message || "Upload failed.";
+      return res.status(400).json({ success: false, error: message });
+    }
+    const files = (req.files as Express.Multer.File[]) || [];
+    if (!files.length) {
+      return res.status(400).json({ success: false, error: "No files were uploaded." });
+    }
+    const data = files.map((f) => ({
+      url: `/uploads/gallery/${f.filename}`,
+      isVideo: f.mimetype.startsWith("video/"),
+      originalName: f.originalname,
+    }));
+    res.json({ success: true, data });
+  });
 });
 
 // --- PROSPECTIVE MEMBER APPLICATIONS ---

@@ -130,6 +130,33 @@ export async function updateMemberApplicationStatus(
   return result.data;
 }
 
+// --- Legacy Gallery: bulk media uploads ---
+// Files are sent as multipart/form-data (not JSON/Base64) so large event
+// videos stream to disk on the server instead of ballooning a JSON payload
+// in memory. See server.ts's /api/admin/gallery/upload comment for why.
+
+export interface UploadedMediaItem {
+  url: string;
+  isVideo: boolean;
+  originalName: string;
+}
+
+export async function uploadGalleryMedia(files: File[]): Promise<UploadedMediaItem[]> {
+  const formData = new FormData();
+  files.forEach((file) => formData.append('files', file));
+
+  const res = await fetch('/api/admin/gallery/upload', {
+    method: 'POST',
+    body: formData,
+  });
+
+  const result = await res.json().catch(() => ({}));
+  if (!res.ok || !result.success) {
+    throw new Error(result.error || `Failed to upload media: ${res.statusText}`);
+  }
+  return result.data;
+}
+
 export async function deleteMemberApplication(id: string): Promise<void> {
   const res = await fetch(`/api/applications/${encodeURIComponent(id)}`, {
     method: "DELETE",

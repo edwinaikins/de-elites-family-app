@@ -3,14 +3,15 @@ import { motion, AnimatePresence } from 'motion/react';
 import {
   Settings, Save, Plus, Trash2, Shield, Crown,
   RefreshCw, Heart, ShieldCheck, Users, Flame,
-  Award, Compass, Image, Calendar,
-  X, Check, RotateCcw, MessageSquare, AlertCircle, LogOut,
+  Award, Compass, Image, Calendar, Film,
+  X, Check, RotateCcw, AlertCircle, LogOut,
   UserCheck, Loader2, Mail, Phone, Wallet, Ticket, UserPlus, Download
 } from 'lucide-react';
 import { useCms } from '../context/CmsContext';
 import { ImageUpload } from './ImageUpload';
-import { Pillar, Leader, GalleryItem, Shoutout, EliteEvent, HeroConfig, CmsUser, MemberApplication, MemberAccount, WelfareDuesPayment, EventPayment, AdminPaymentRecord } from '../types';
-import { fetchMemberApplications, updateMemberApplicationStatus, deleteMemberApplication } from '../lib/cmsClient';
+import { BulkMediaUpload } from './BulkMediaUpload';
+import { Pillar, Leader, GalleryItem, EliteEvent, HeroConfig, CmsUser, MemberApplication, MemberAccount, WelfareDuesPayment, EventPayment, AdminPaymentRecord } from '../types';
+import { fetchMemberApplications, updateMemberApplicationStatus, deleteMemberApplication, UploadedMediaItem } from '../lib/cmsClient';
 import {
   fetchAllMemberAccounts, createMemberAccount, updateMemberAccount, deleteMemberAccount,
   fetchMemberDuesHistoryAdmin, fetchMemberEventPaymentsAdmin, fetchAllPaymentsAdmin,
@@ -22,7 +23,7 @@ interface CmsDashboardProps {
   onClose: () => void;
 }
 
-type TabType = 'pillars' | 'leaders' | 'gallery' | 'shoutouts' | 'events' | 'hero' | 'users' | 'applications' | 'memberAccounts' | 'payments';
+type TabType = 'pillars' | 'leaders' | 'gallery' | 'events' | 'hero' | 'users' | 'applications' | 'memberAccounts' | 'payments';
 
 function currentPeriod(): string {
   const now = new Date();
@@ -51,7 +52,7 @@ function formatChannel(channel?: string): string {
 
 export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
   const {
-    pillars, leaders, gallery, shoutouts, events, hero, users,
+    pillars, leaders, gallery, events, hero, users,
     updateSection, resetToDefaults, loading, error
   } = useCms();
 
@@ -64,7 +65,6 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
   const [localPillars, setLocalPillars] = useState<Pillar[]>([]);
   const [localLeaders, setLocalLeaders] = useState<Leader[]>([]);
   const [localGallery, setLocalGallery] = useState<GalleryItem[]>([]);
-  const [localShoutouts, setLocalShoutouts] = useState<Shoutout[]>([]);
   const [localEvents, setLocalEvents] = useState<EliteEvent[]>([]);
   const [localHero, setLocalHero] = useState<HeroConfig[]>([]);
   const [localUsers, setLocalUsers] = useState<CmsUser[]>([]);
@@ -145,7 +145,6 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
       setLocalPillars([...pillars]);
       setLocalLeaders([...leaders]);
       setLocalGallery([...gallery]);
-      setLocalShoutouts([...shoutouts]);
       setLocalEvents([...events]);
       setLocalHero([...hero]);
       setLocalUsers([...(users || [])]);
@@ -154,7 +153,7 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
       setLocalError(null);
       setSuccessMsg(null);
     }
-  }, [isOpen, pillars, leaders, gallery, shoutouts, events, hero, users]);
+  }, [isOpen, pillars, leaders, gallery, events, hero, users]);
 
   React.useEffect(() => {
     setSelectedItemId(null);
@@ -380,8 +379,6 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
         await updateSection('leaders', localLeaders);
       } else if (tab === 'gallery') {
         await updateSection('gallery', localGallery);
-      } else if (tab === 'shoutouts') {
-        await updateSection('shoutouts', localShoutouts);
       } else if (tab === 'events') {
         await updateSection('events', localEvents);
       } else if (tab === 'hero') {
@@ -406,7 +403,6 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
         setLocalPillars([...pillars]);
         setLocalLeaders([...leaders]);
         setLocalGallery([...gallery]);
-        setLocalShoutouts([...shoutouts]);
         setLocalEvents([...events]);
         setLocalHero([...hero]);
         setLocalUsers([...users]);
@@ -494,6 +490,33 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
       setLocalGallery(prev => prev.filter(g => g.id !== id));
       if (selectedItemId === id) setSelectedItemId(null);
     }
+  };
+
+  // Turns a batch of just-uploaded files (from BulkMediaUpload) into one
+  // draft GalleryItem per file, defaulted to the 'Events' category since
+  // that's the common case (bulk-uploading photos/videos from an event).
+  // Nothing is saved to the server yet — the admin reviews/edits the new
+  // entries like any other gallery item, then hits "Save All gallery".
+  const handleBulkGalleryUpload = (items: UploadedMediaItem[]) => {
+    if (!items.length) return;
+    const dateLabel = new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+    const newItems: GalleryItem[] = items.map((it, i) => {
+      const cleanedTitle = it.originalName.replace(/\.[^/.]+$/, '').replace(/[-_]+/g, ' ').trim();
+      return {
+        id: `g-${Date.now()}-${i}`,
+        title: cleanedTitle || (it.isVideo ? 'Event Video' : 'Event Photo'),
+        category: 'Events',
+        image: it.url,
+        description: '',
+        date: dateLabel,
+        isVideo: it.isVideo,
+      };
+    });
+    setLocalGallery(prev => [...newItems, ...prev]);
+    setSelectedItemId(newItems[0].id);
+    triggerNotification(
+      `${newItems.length} file${newItems.length === 1 ? '' : 's'} uploaded — review the details below, then click "Save All gallery" to publish.`
+    );
   };
 
   // APPLICATIONS ACTIONS (server-backed, not part of local CmsDatabase state)
@@ -621,33 +644,6 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
     }
     if (window.confirm(`Are you sure you want to delete user account "${user.username}"?`)) {
       setLocalUsers(prev => prev.filter(u => u.id !== id));
-      if (selectedItemId === id) setSelectedItemId(null);
-    }
-  };
-
-  // SHOUTOUTS CRUD
-  const handleShoutoutChange = (id: string, field: keyof Shoutout, value: any) => {
-    setLocalShoutouts(prev => prev.map(s => s.id === id ? { ...s, [field]: value } : s));
-  };
-
-  const handleAddShoutout = () => {
-    const newShoutout: Shoutout = {
-      id: `s-${Date.now()}`,
-      name: "Sovereign Contributor",
-      role: "Leader / Accra Chapter",
-      message: "Leave an official statement or testimony...",
-      timestamp: "Just now",
-      theme: "gold-glow",
-      likes: 5
-    };
-    setLocalShoutouts(prev => [newShoutout, ...prev]);
-    setSelectedItemId(newShoutout.id);
-    setIsAddingNew(true);
-  };
-
-  const handleDeleteShoutout = (id: string) => {
-    if (window.confirm("Are you sure you want to delete this shoutout message?")) {
-      setLocalShoutouts(prev => prev.filter(s => s.id !== id));
       if (selectedItemId === id) setSelectedItemId(null);
     }
   };
@@ -858,13 +854,12 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                 { type: 'pillars', label: '1. Core Pillars', count: localPillars.length, desc: 'Love, Loyalty, Unity' },
                 { type: 'leaders', label: '2. Leadership', count: localLeaders.length, desc: 'Patrons & Council' },
                 { type: 'gallery', label: '3. Legacy Gallery', count: localGallery.length, desc: 'Milestone Events' },
-                { type: 'shoutouts', label: '4. Shoutout Wall', count: localShoutouts.length, desc: 'Community Voice' },
-                { type: 'events', label: '5. Upcoming Events', count: localEvents.length, desc: 'Concerts & Summits' },
-                { type: 'hero', label: '6. Hero & Branding', count: localHero.length, desc: 'Title, Logo & Stats' },
-                { type: 'users', label: '7. User Accounts', count: localUsers.length, desc: 'Manage CMS Users' },
-                { type: 'applications', label: '8. Applications', count: applications.length, desc: 'Prospective Members' },
-                { type: 'memberAccounts', label: '9. Member Accounts', count: memberAccounts.length, desc: 'Portal Logins & Dues' },
-                { type: 'payments', label: '10. Payments', count: payments.length, desc: 'Reconciliation & Exports' }
+                { type: 'events', label: '4. Upcoming Events', count: localEvents.length, desc: 'Concerts & Summits' },
+                { type: 'hero', label: '5. Hero & Branding', count: localHero.length, desc: 'Title, Logo & Stats' },
+                { type: 'users', label: '6. User Accounts', count: localUsers.length, desc: 'Manage CMS Users' },
+                { type: 'applications', label: '7. Applications', count: applications.length, desc: 'Prospective Members' },
+                { type: 'memberAccounts', label: '8. Member Accounts', count: memberAccounts.length, desc: 'Portal Logins & Dues' },
+                { type: 'payments', label: '9. Payments', count: payments.length, desc: 'Reconciliation & Exports' }
               ].map((item) => (
                 <button
                   key={item.type}
@@ -928,7 +923,6 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                     onClick={() => {
                       if (activeTab === 'leaders') handleAddLeader();
                       else if (activeTab === 'gallery') handleAddGalleryItem();
-                      else if (activeTab === 'shoutouts') handleAddShoutout();
                       else if (activeTab === 'events') handleAddEvent();
                     }}
                     className="px-3.5 py-1.5 rounded bg-jet-black border border-gray-800 hover:border-luxury-gold/50 text-white hover:text-luxury-gold font-sans font-black tracking-widest text-[10px] uppercase transition-all cursor-pointer flex items-center gap-1.5"
@@ -1203,8 +1197,12 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
 
               {/* GALLERY MODULE VIEW */}
               {activeTab === 'gallery' && (
-                <div className="grid grid-cols-3 gap-6 h-full items-start">
-                  
+                <div className="flex flex-col gap-6 h-full">
+
+                  <BulkMediaUpload onUploaded={handleBulkGalleryUpload} />
+
+                  <div className="grid grid-cols-3 gap-6 flex-1 items-start min-h-0">
+
                   {/* Milestones list */}
                   <div className="col-span-1 bg-charcoal-card rounded border border-gray-900 p-4 space-y-2 max-h-[600px] overflow-y-auto">
                     <span className="font-sans text-[9px] font-black uppercase tracking-widest text-gray-500 block mb-2">
@@ -1221,12 +1219,18 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                         }`}
                       >
                         <div className="flex items-center gap-2.5 min-w-0">
-                          <img
-                            src={item.image}
-                            alt={item.title}
-                            referrerPolicy="no-referrer"
-                            className="w-10 h-8 rounded object-cover border border-gray-800"
-                          />
+                          {item.isVideo ? (
+                            <div className="w-10 h-8 rounded border border-gray-800 bg-black flex items-center justify-center shrink-0">
+                              <Film className="w-4 h-4 text-luxury-gold" />
+                            </div>
+                          ) : (
+                            <img
+                              src={item.image}
+                              alt={item.title}
+                              referrerPolicy="no-referrer"
+                              className="w-10 h-8 rounded object-cover border border-gray-800"
+                            />
+                          )}
                           <div className="min-w-0">
                             <h4 className="font-display text-xs font-black uppercase truncate leading-tight">
                               {item.title}
@@ -1288,6 +1292,7 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                                   <option value="Community">Community</option>
                                   <option value="Philanthropy">Philanthropy</option>
                                   <option value="Movement">Movement</option>
+                                  <option value="Events">Events</option>
                                 </select>
                               </div>
                               <div className="flex flex-col gap-1.5">
@@ -1302,13 +1307,25 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                               </div>
                             </div>
 
-                            <ImageUpload
-                              value={item.image}
-                              onChange={(val) => handleGalleryChange(item.id, 'image', val)}
-                              label="Banner Image / Cover Photo"
-                              description="Drag and drop or click to upload a banner image for this milestone."
-                              aspectRatio="banner"
-                            />
+                            {item.isVideo ? (
+                              <div className="space-y-2">
+                                <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">Video File</label>
+                                <div className="border border-gray-800 rounded-lg bg-jet-black overflow-hidden aspect-video">
+                                  <video src={item.image} controls className="w-full h-full object-contain" />
+                                </div>
+                                <p className="text-[9px] text-gray-500 font-sans">
+                                  Uploaded video file. To replace it, delete this entry and upload the new file again via the bulk uploader above.
+                                </p>
+                              </div>
+                            ) : (
+                              <ImageUpload
+                                value={item.image}
+                                onChange={(val) => handleGalleryChange(item.id, 'image', val)}
+                                label="Banner Image / Cover Photo"
+                                description="Drag and drop or click to upload a banner image for this milestone."
+                                aspectRatio="banner"
+                              />
+                            )}
 
                             <div className="flex flex-col gap-1.5">
                               <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">Milestone Summary Description</label>
@@ -1325,211 +1342,12 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                     ) : (
                       <div className="py-24 text-center text-gray-500 text-xs">
                         <Image className="w-8 h-8 text-luxury-gold/25 mx-auto mb-3" />
-                        Select a milestone event on the left side to edit details or log a new community event.
+                        Select a milestone event on the left side to edit details, or upload event photos/videos in bulk above.
                       </div>
                     )}
                   </div>
 
-                </div>
-              )}
-
-
-              {/* SHOUTOUTS MODULE VIEW */}
-              {activeTab === 'shoutouts' && (
-                <div className="grid grid-cols-3 gap-6 h-full items-start">
-                  
-                  {/* Shoutouts list */}
-                  <div className="col-span-1 bg-charcoal-card rounded border border-gray-900 p-4 space-y-2 max-h-[600px] overflow-y-auto">
-                    <span className="font-sans text-[9px] font-black uppercase tracking-widest text-gray-500 block mb-2">
-                      Shoutout Posts
-                    </span>
-                    {localShoutouts.map((post) => (
-                      <div
-                        key={post.id}
-                        onClick={() => setSelectedItemId(post.id)}
-                        className={`p-2.5 rounded border flex items-center justify-between gap-3 cursor-pointer group transition-all ${
-                          selectedItemId === post.id
-                            ? 'bg-luxury-gold/10 border-luxury-gold/30 text-luxury-gold'
-                            : 'bg-jet-black border-transparent hover:border-gray-800 text-gray-300'
-                        }`}
-                      >
-                        <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                          <div className="w-8 h-8 rounded bg-luxury-gold/10 border border-luxury-gold/30 flex items-center justify-center text-luxury-gold text-xs font-black shrink-0">
-                            SM
-                          </div>
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-1.5">
-                              <h4 className="font-display text-xs font-black uppercase truncate leading-tight">
-                                {post.name}
-                              </h4>
-                              {post.approved === false ? (
-                                <span className="text-[8px] px-1.5 bg-amber-500/10 border border-amber-500/20 text-amber-500 font-bold uppercase rounded tracking-wider shrink-0">
-                                  Pending
-                                </span>
-                              ) : (
-                                <span className="text-[8px] px-1.5 bg-green-500/10 border border-green-500/20 text-green-500 font-bold uppercase rounded tracking-wider shrink-0">
-                                  Approved
-                                </span>
-                              )}
-                            </div>
-                            <p className="font-sans text-[9px] text-gray-500 truncate mt-0.5">
-                              "{post.message}"
-                            </p>
-                          </div>
-                        </div>
-
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleDeleteShoutout(post.id);
-                          }}
-                          className="text-gray-600 hover:text-red-400 transition-colors cursor-pointer p-1"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    ))}
                   </div>
-
-                  {/* Shoutouts editor */}
-                  <div className="col-span-2 bg-charcoal-card rounded border border-gray-900 p-6">
-                    {selectedItemId && localShoutouts.find(s => s.id === selectedItemId) ? (
-                      (() => {
-                        const post = localShoutouts.find(s => s.id === selectedItemId)!;
-                        return (
-                          <div className="space-y-4">
-                            <div className="flex justify-between items-center border-b border-gray-900 pb-3 mb-4">
-                              <h3 className="font-display text-sm font-black text-white uppercase tracking-wider">
-                                EDIT SHOUTOUT MESSAGE
-                              </h3>
-                              <span className="text-[10px] font-mono text-gray-500">
-                                ID: {post.id}
-                              </span>
-                            </div>
-
-                            <div className="grid grid-cols-2 gap-4">
-                              <div className="flex flex-col gap-1.5">
-                                <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">Sender Name</label>
-                                <input
-                                  type="text"
-                                  value={post.name}
-                                  onChange={(e) => handleShoutoutChange(post.id, 'name', e.target.value)}
-                                  className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold"
-                                />
-                              </div>
-                              <div className="flex flex-col gap-1.5">
-                                <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">Sender Role / Branch</label>
-                                <input
-                                  type="text"
-                                  value={post.role}
-                                  onChange={(e) => handleShoutoutChange(post.id, 'role', e.target.value)}
-                                  className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold"
-                                />
-                              </div>
-                            </div>
-
-                            <div className="grid grid-cols-3 gap-4">
-                              <div className="flex flex-col gap-1.5">
-                                <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">Visual Theme</label>
-                                <select
-                                  value={post.theme}
-                                  onChange={(e) => handleShoutoutChange(post.id, 'theme', e.target.value as any)}
-                                  className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold cursor-pointer"
-                                >
-                                  <option value="gold-glow">Gold Glow</option>
-                                  <option value="minimalist">Minimalist</option>
-                                  <option value="regal-banner">Regal Banner</option>
-                                  <option value="charcoal-border">Charcoal Border</option>
-                                </select>
-                              </div>
-                              <div className="flex flex-col gap-1.5">
-                                <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">Likes Count</label>
-                                <input
-                                  type="number"
-                                  value={post.likes}
-                                  onChange={(e) => handleShoutoutChange(post.id, 'likes', parseInt(e.target.value) || 0)}
-                                  className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold"
-                                />
-                              </div>
-                              <div className="flex flex-col gap-1.5">
-                                <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">Timestamp</label>
-                                <input
-                                  type="text"
-                                  value={post.timestamp}
-                                  onChange={(e) => handleShoutoutChange(post.id, 'timestamp', e.target.value)}
-                                  className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold"
-                                />
-                              </div>
-                            </div>
-
-                            <div className="flex flex-col gap-1.5">
-                              <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">Shoutout Message (max 280 chars)</label>
-                              <textarea
-                                value={post.message}
-                                onChange={(e) => handleShoutoutChange(post.id, 'message', e.target.value)}
-                                rows={5}
-                                maxLength={280}
-                                className="bg-jet-black border border-gray-800 rounded px-3 py-2 text-xs text-white focus:outline-none focus:border-luxury-gold resize-none"
-                              />
-                            </div>
-
-                            {/* Moderator Approval Card */}
-                            <div className="bg-jet-black border border-gray-900 rounded p-4 flex flex-col sm:flex-row items-center justify-between gap-4 mt-6">
-                              <div className="flex items-center gap-3">
-                                {post.approved === false ? (
-                                  <div className="w-10 h-10 rounded-full bg-amber-500/15 flex items-center justify-center border border-amber-500/30 text-amber-500 shrink-0">
-                                    <AlertCircle className="w-5 h-5 animate-pulse" />
-                                  </div>
-                                ) : (
-                                  <div className="w-10 h-10 rounded-full bg-green-500/15 flex items-center justify-center border border-green-500/30 text-green-500 shrink-0">
-                                    <ShieldCheck className="w-5 h-5" />
-                                  </div>
-                                )}
-                                <div>
-                                  <h4 className="font-display text-xs font-black uppercase tracking-wider text-white">
-                                    {post.approved === false ? 'PENDING APPROVAL MODERATION' : 'SHOUTOUT APPROVED'}
-                                  </h4>
-                                  <p className="text-[10px] text-gray-500 max-w-md mt-0.5 leading-relaxed">
-                                    {post.approved === false 
-                                      ? 'This elite card is currently hidden from the public shoutout wall. Click approve below to release it.' 
-                                      : 'This elite card is currently visible on the public shoutout wall. You can withdraw approval at any time.'}
-                                  </p>
-                                </div>
-                              </div>
-
-                              <div>
-                                {post.approved === false ? (
-                                  <button
-                                    type="button"
-                                    onClick={() => handleShoutoutChange(post.id, 'approved', true)}
-                                    className="px-4 py-2 bg-green-600 hover:bg-green-500 text-white text-[10px] font-sans font-black tracking-widest uppercase rounded cursor-pointer transition-colors flex items-center gap-1.5 whitespace-nowrap"
-                                  >
-                                    <Check className="w-3.5 h-3.5" />
-                                    APPROVE CARD
-                                  </button>
-                                ) : (
-                                  <button
-                                    type="button"
-                                    onClick={() => handleShoutoutChange(post.id, 'approved', false)}
-                                    className="px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white text-[10px] font-sans font-black tracking-widest uppercase rounded cursor-pointer transition-colors flex items-center gap-1.5 whitespace-nowrap"
-                                  >
-                                    <X className="w-3.5 h-3.5" />
-                                    WITHDRAW APPROVAL
-                                  </button>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-                        );
-                      })()
-                    ) : (
-                      <div className="py-24 text-center text-gray-500 text-xs">
-                        <MessageSquare className="w-8 h-8 text-luxury-gold/25 mx-auto mb-3" />
-                        Select a shoutout post on the left side to edit details or log a new official testimony.
-                      </div>
-                    )}
-                  </div>
-
                 </div>
               )}
 

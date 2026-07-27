@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Filter, Calendar, Award, Crown, MapPin, ExternalLink } from 'lucide-react';
+import { Filter, Calendar, Award, Crown, MapPin, ExternalLink, PlayCircle } from 'lucide-react';
 import { useCms } from '../context/CmsContext';
 import { GalleryItem } from '../types';
 
@@ -88,15 +88,31 @@ export default function Gallery() {
               >
                 {/* Image Wrap */}
                 <div className="relative overflow-hidden aspect-video sm:aspect-square lg:aspect-video">
-                  <img
-                    src={item.image}
-                    alt={item.title}
-                    referrerPolicy="no-referrer"
-                    className="w-full h-full object-cover transition-transform duration-700 ease-out group-hover:scale-105"
-                  />
+                  {item.isVideo ? (
+                    <video
+                      src={item.image}
+                      muted
+                      playsInline
+                      preload="metadata"
+                      className="w-full h-full object-cover transition-transform duration-700 ease-out group-hover:scale-105"
+                    />
+                  ) : (
+                    <img
+                      src={item.image}
+                      alt={item.title}
+                      referrerPolicy="no-referrer"
+                      className="w-full h-full object-cover transition-transform duration-700 ease-out group-hover:scale-105"
+                    />
+                  )}
                   {/* Subtle Top Luxury Gold Linear Gradient Overlay */}
                   <div className="absolute inset-0 bg-gradient-to-t from-jet-black via-black/35 to-transparent opacity-80 group-hover:via-black/20 transition-all duration-300" />
-                  
+
+                  {item.isVideo && (
+                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                      <PlayCircle className="w-12 h-12 text-white/90 drop-shadow-lg" />
+                    </div>
+                  )}
+
                   {/* Category Badge */}
                   <span className="absolute top-4 left-4 font-sans text-[9px] font-black uppercase tracking-[0.2em] text-black bg-luxury-gold px-2.5 py-1 rounded">
                     {item.category}
@@ -150,13 +166,22 @@ export default function Gallery() {
             </button>
 
             {/* Showcase Image */}
-            <div className="relative aspect-video w-full">
-              <img
-                src={selectedItem.image}
-                alt={selectedItem.title}
-                referrerPolicy="no-referrer"
-                className="w-full h-full object-cover"
-              />
+            <div className="relative aspect-video w-full bg-black">
+              {selectedItem.isVideo ? (
+                <video
+                  src={selectedItem.image}
+                  controls
+                  autoPlay
+                  className="w-full h-full object-contain"
+                />
+              ) : (
+                <img
+                  src={selectedItem.image}
+                  alt={selectedItem.title}
+                  referrerPolicy="no-referrer"
+                  className="w-full h-full object-cover"
+                />
+              )}
               <span className="absolute bottom-3 left-3 sm:bottom-4 sm:left-4 font-sans text-[10px] font-black uppercase tracking-[0.25em] text-black bg-luxury-gold px-3 py-1 rounded">
                 {selectedItem.category}
               </span>

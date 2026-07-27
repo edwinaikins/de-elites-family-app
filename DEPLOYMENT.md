@@ -192,6 +192,37 @@ toward it, making as many partial payments as they like until the period is
 fully covered. Event registration payments stay full-price-only (a
 half-registered event ticket isn't a meaningful state).
 
+### Legacy Gallery: bulk photo/video uploads
+
+The CMS's **Legacy Gallery** tab (Staff Login → Legacy Gallery) has a drag &
+drop zone above the milestone list — select or drop multiple event photos
+and videos at once (up to 150MB each) and it creates one draft gallery entry
+per file, defaulted to the "Events" category. Review/edit the title,
+category, date, and description for each, then click **Save All gallery**
+to publish them to the public Legacy Gallery section on the homepage.
+Videos play inline in both the grid and the spotlight modal; photos work
+exactly as before.
+
+Unlike other CMS images (which are small Base64 strings stored directly in
+the database), uploaded gallery media is written to disk on the VM and
+served from `/uploads/gallery/...` — this keeps the page that loads on
+every visit fast even when someone uploads a 100MB event video.
+
+**Recommended for production:** set `UPLOADS_DIR` in `.env` on the VM to a
+folder *outside* your deployed app directory, e.g.:
+
+```
+UPLOADS_DIR=/home/edwinaikins/apps/de-elites-family-uploads
+```
+
+then `mkdir -p /home/edwinaikins/apps/de-elites-family-uploads` once and
+restart the service. This isn't strictly required — if you leave it unset,
+uploads land in an `uploads/` folder inside the app directory and `git
+pull`-based deploys won't touch untracked files — but pointing it outside
+the app folder is the safer choice if you ever redo the deploy process
+(e.g. a clean clone) since it guarantees previously uploaded event media is
+never at risk of being wiped.
+
 ### Reconciling payments ("who paid what")
 
 The CMS's **10. Payments** tab (Staff Login → Payments) lists every dues
