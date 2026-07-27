@@ -5,46 +5,23 @@ import { useCms } from '../context/CmsContext';
 import { GalleryItem } from '../types';
 
 export default function Gallery() {
-  const { gallery, events } = useCms();
+  const { gallery } = useCms();
   const [activeFilter, setActiveFilter] = useState<string>('All');
   const [selectedItem, setSelectedItem] = useState<GalleryItem | null>(null);
   const [activeMediaIndex, setActiveMediaIndex] = useState(0);
 
   const categories = ['All', 'Legacy', 'Community', 'Philanthropy', 'Movement', 'Events'];
 
-  // Merge event photos/videos into the gallery grid as display-only items,
-  // tagged 'Events'. An event with its own uploaded gallery (event.media,
-  // set via the CMS Events tab) contributes one card per uploaded photo or
-  // video, all sharing that event's title/date. An event with no uploaded
-  // media yet falls back to a single teaser card using its banner image, so
-  // every event still shows up here even before anyone's uploaded coverage.
-  const eventGalleryItems: GalleryItem[] = (events || []).flatMap((event) => {
-    if (event.media && event.media.length > 0) {
-      return event.media.map((m) => ({
-        id: `event-${event.id}-${m.id}`,
-        title: event.title,
-        category: 'Events',
-        image: m.url,
-        description: event.description,
-        date: event.date,
-        isVideo: m.isVideo,
-      }));
-    }
-    return [{
-      id: `event-${event.id}`,
-      title: event.title,
-      category: 'Events',
-      image: event.image,
-      description: event.description,
-      date: event.date,
-    }];
-  });
-
-  const combinedItems = [...gallery, ...eventGalleryItems];
-
+  // Note: this grid intentionally only shows the CMS's own curated Gallery
+  // items — publishing an Upcoming Event does NOT automatically add it here.
+  // Events get their own "View Gallery" lightbox on the Events section
+  // instead (see Events.tsx). An admin can still manually tag a Gallery item
+  // 'Events' (e.g. via the Legacy Gallery tab's bulk uploader, which
+  // defaults new uploads to that category) if they want event coverage
+  // photos to also show up in this section on purpose.
   const filteredItems = activeFilter === 'All'
-    ? combinedItems
-    : combinedItems.filter(item => item.category === activeFilter);
+    ? gallery
+    : gallery.filter(item => item.category === activeFilter);
 
   return (
     <section id="legacy-gallery" className="py-24 bg-jet-black relative overflow-hidden border-t border-gray-950">
