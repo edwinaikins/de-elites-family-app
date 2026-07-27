@@ -116,6 +116,37 @@ If `systemctl --user` says it can't connect to the bus, re-run
 If nginx 502s, the Node process probably isn't running — check the service
 status above first.
 
+If saving a CMS section (Leaders, Pillars, Gallery, Hero, etc.) fails with
+**"Request Entity Too Large"**, it means the request body — the whole
+section's array, with every embedded Base64 photo in it — is bigger than a
+size limit somewhere between the browser and Node. There are two limits
+involved, and both may need raising if you keep hitting this with a lot of
+photos:
+
+1. **Express's own limit** (in `server.ts`, currently 60mb) — already sized
+   to comfortably fit several full-size photos in one save.
+2. **nginx's `client_max_body_size`**, which defaults to just **1MB** and
+   sits in front of Node — this is almost always the actual cause, since
+   even a single uploaded photo easily exceeds 1MB as Base64. Fix it on the
+   VM:
+
+   ```bash
+   ssh -i <PRIVATE_KEY_PATH> edwinaikins@178.63.178.212
+   sudo nano /etc/nginx/sites-available/de-elites-family
+   ```
+
+   Inside the `server { ... }` block, add:
+
+   ```
+   client_max_body_size 60m;
+   ```
+
+   Then reload:
+
+   ```bash
+   sudo nginx -t && sudo systemctl reload nginx
+   ```
+
 ## Enabling the member portal + Paystack payments
 
 The member portal, welfare dues, and paid event registration feature needs

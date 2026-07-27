@@ -15,13 +15,23 @@ const { Pool } = pg;
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 
-// Parse large JSON payloads for Base64 image uploads. We also stash the raw
-// request body on `req` (via the `verify` hook) so the Paystack webhook
-// handler can compute an HMAC signature over the exact bytes Paystack sent —
-// re-serializing the parsed JSON wouldn't reliably match byte-for-byte.
+// Parse large JSON payloads for Base64 image uploads. Sections like Leaders,
+// Pillars, Gallery, and Hero save their WHOLE array in one request (see
+// /api/cms/update below) — so this limit has to cover every embedded
+// profile/cover photo in that section combined, not just one image. Each
+// photo can be up to 5MB raw (see ImageUpload.tsx's client-side cap), which
+// is ~6.7MB once Base64-encoded; a handful of leaders each with a max-size
+// photo can add up past a small limit, which is what caused a real "Request
+// Entity Too Large" error on a Leaders save. 60mb leaves comfortable
+// headroom for a large team/gallery without it becoming a real issue again.
+//
+// We also stash the raw request body on `req` (via the `verify` hook) so the
+// Paystack webhook handler can compute an HMAC signature over the exact
+// bytes Paystack sent — re-serializing the parsed JSON wouldn't reliably
+// match byte-for-byte.
 app.use(
   express.json({
-    limit: "15mb",
+    limit: "60mb",
     verify: (req: any, _res, buf) => {
       req.rawBody = buf;
     },
