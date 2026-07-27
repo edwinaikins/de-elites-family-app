@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Filter, Calendar, Award, Crown, MapPin, ExternalLink, PlayCircle } from 'lucide-react';
+import { Filter, Calendar, Award, Crown, MapPin, ExternalLink, PlayCircle, ChevronLeft, ChevronRight, Images } from 'lucide-react';
 import { useCms } from '../context/CmsContext';
 import { GalleryItem } from '../types';
 
@@ -8,6 +8,7 @@ export default function Gallery() {
   const { gallery, events } = useCms();
   const [activeFilter, setActiveFilter] = useState<string>('All');
   const [selectedItem, setSelectedItem] = useState<GalleryItem | null>(null);
+  const [activeMediaIndex, setActiveMediaIndex] = useState(0);
 
   const categories = ['All', 'Legacy', 'Community', 'Philanthropy', 'Movement', 'Events'];
 
@@ -101,7 +102,7 @@ export default function Gallery() {
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0, scale: 0.9 }}
                 transition={{ duration: 0.4, ease: 'easeOut' }}
-                onClick={() => setSelectedItem(item)}
+                onClick={() => { setSelectedItem(item); setActiveMediaIndex(0); }}
                 className="group relative bg-charcoal-card border border-gray-900 rounded-lg overflow-hidden cursor-pointer hover:border-luxury-gold/30 transition-all duration-300 shadow-md hover:shadow-[0_8px_30px_rgba(0,0,0,0.8)]"
               >
                 {/* Image Wrap */}
@@ -135,6 +136,13 @@ export default function Gallery() {
                   <span className="absolute top-4 left-4 font-sans text-[9px] font-black uppercase tracking-[0.2em] text-black bg-luxury-gold px-2.5 py-1 rounded">
                     {item.category}
                   </span>
+
+                  {item.media && item.media.length > 0 && (
+                    <span className="absolute top-4 right-4 flex items-center gap-1 font-sans text-[9px] font-black uppercase tracking-[0.15em] text-white bg-black/70 border border-white/10 px-2 py-1 rounded backdrop-blur-sm">
+                      <Images className="w-3 h-3" />
+                      +{item.media.length}
+                    </span>
+                  )}
                 </div>
 
                 {/* Info Overlay / Footer Card */}
@@ -168,96 +176,150 @@ export default function Gallery() {
       </div>
 
       {/* Gallery Spotlight Modal */}
-      {selectedItem && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/95 backdrop-blur-md">
-          <motion.div
-            initial={{ opacity: 0, y: 30 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="bg-charcoal-card border border-luxury-gold/40 max-w-3xl w-full max-h-[92vh] sm:max-h-[90vh] rounded-lg overflow-y-auto overscroll-contain relative shadow-[0_20px_50px_rgba(0,0,0,0.95)]"
-          >
-            {/* Close */}
-            <button
-              onClick={() => setSelectedItem(null)}
-              className="absolute top-3 right-3 sm:top-4 sm:right-4 text-white hover:text-luxury-gold font-sans font-bold text-lg p-2 transition-colors cursor-pointer z-20 bg-black/60 rounded-full w-9 h-9 sm:w-10 sm:h-10 flex items-center justify-center"
+      {selectedItem && (() => {
+        // Cover image/video plus any additional uploaded media, combined
+        // into one browsable sequence for the lightbox.
+        const media = [
+          { id: 'cover', url: selectedItem.image, isVideo: selectedItem.isVideo },
+          ...(selectedItem.media || []),
+        ];
+        const active = media[activeMediaIndex] || media[0];
+
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/95 backdrop-blur-md">
+            <motion.div
+              initial={{ opacity: 0, y: 30 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="bg-charcoal-card border border-luxury-gold/40 max-w-3xl w-full max-h-[92vh] sm:max-h-[90vh] rounded-lg overflow-y-auto overscroll-contain relative shadow-[0_20px_50px_rgba(0,0,0,0.95)]"
             >
-              ✕
-            </button>
-
-            {/* Showcase Image */}
-            <div className="relative aspect-video w-full bg-black">
-              {selectedItem.isVideo ? (
-                <video
-                  src={selectedItem.image}
-                  controls
-                  autoPlay
-                  className="w-full h-full object-contain"
-                />
-              ) : (
-                <img
-                  src={selectedItem.image}
-                  alt={selectedItem.title}
-                  referrerPolicy="no-referrer"
-                  className="w-full h-full object-cover"
-                />
-              )}
-              <span className="absolute bottom-3 left-3 sm:bottom-4 sm:left-4 font-sans text-[10px] font-black uppercase tracking-[0.25em] text-black bg-luxury-gold px-3 py-1 rounded">
-                {selectedItem.category}
-              </span>
-            </div>
-
-            {/* Details */}
-            <div className="p-5 sm:p-8">
-              <div className="flex flex-wrap items-center gap-2.5 text-gray-500 mb-3">
-                <Calendar className="w-4 h-4 text-luxury-gold" />
-                <span className="font-mono text-xs uppercase tracking-widest text-gray-400 font-bold">
-                  {selectedItem.date}
-                </span>
-                <span className="text-gray-700 hidden sm:inline">•</span>
-                <span className="font-sans text-xs uppercase tracking-widest text-luxury-gold font-bold flex items-center gap-1">
-                  <Award className="w-3.5 h-3.5" /> {selectedItem.category === 'Events' ? 'Upcoming Event' : 'Approved Project'}
-                </span>
-              </div>
-
-              <h3 className="font-display text-xl sm:text-2xl md:text-3xl font-black text-white uppercase tracking-tight mb-4">
-                {selectedItem.title}
-              </h3>
-
-              <div className="h-[1px] w-20 bg-luxury-gold mb-6" />
-
-              <p className="font-sans text-sm sm:text-base text-gray-300 leading-relaxed">
-                {selectedItem.description}
-              </p>
-
-              {/* Impact Callout block */}
-              <div className="mt-8 bg-jet-black/60 border border-gray-900/80 p-4 sm:p-5 rounded flex items-start gap-4">
-                <div className="w-10 h-10 rounded-full bg-luxury-gold/5 border border-luxury-gold/20 flex items-center justify-center shrink-0">
-                  <Crown className="w-5 h-5 text-luxury-gold" />
-                </div>
-                <div>
-                  <h4 className="font-display text-xs font-black uppercase tracking-widest text-luxury-gold">
-                    {selectedItem.category === 'Events' ? 'Assembly Overview' : 'Movement Impact Summary'}
-                  </h4>
-                  <p className="font-sans text-xs text-gray-400 mt-1 leading-relaxed">
-                    {selectedItem.category === 'Events'
-                      ? 'This is one of our upcoming sovereign assemblies. Head to the Upcoming Events section for full date, time, and location details.'
-                      : 'This project is a cornerstone of our community empowerment model. Fully supported by collective contributions, De Elites Family ensures direct allocation, transparent auditing, and sustainable execution for all local initiatives.'}
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            {/* Modal Footer */}
-            <div className="bg-jet-black/80 p-4 sm:p-6 border-t border-gray-900 flex justify-end gap-3 sticky bottom-0">
+              {/* Close */}
               <button
                 onClick={() => setSelectedItem(null)}
-                className="px-6 py-2.5 bg-luxury-gold hover:bg-luxury-gold-dark text-black font-sans font-black tracking-widest text-xs uppercase rounded transition-colors cursor-pointer"
+                className="absolute top-3 right-3 sm:top-4 sm:right-4 text-white hover:text-luxury-gold font-sans font-bold text-lg p-2 transition-colors cursor-pointer z-20 bg-black/60 rounded-full w-9 h-9 sm:w-10 sm:h-10 flex items-center justify-center"
               >
-                Close
+                ✕
               </button>
-            </div>
-          </motion.div>
-        </div>
-      )}
+
+              {/* Showcase Image / Video */}
+              <div className="relative aspect-video w-full bg-black">
+                {active.isVideo ? (
+                  <video
+                    key={active.id}
+                    src={active.url}
+                    controls
+                    autoPlay
+                    className="w-full h-full object-contain"
+                  />
+                ) : (
+                  <img
+                    key={active.id}
+                    src={active.url}
+                    alt={selectedItem.title}
+                    referrerPolicy="no-referrer"
+                    className="w-full h-full object-contain"
+                  />
+                )}
+
+                {media.length > 1 && (
+                  <>
+                    <button
+                      onClick={() => setActiveMediaIndex((i) => (i - 1 + media.length) % media.length)}
+                      className="absolute left-2 top-1/2 -translate-y-1/2 bg-black/60 hover:bg-black/80 text-white rounded-full w-9 h-9 flex items-center justify-center cursor-pointer transition-colors z-10"
+                    >
+                      <ChevronLeft className="w-5 h-5" />
+                    </button>
+                    <button
+                      onClick={() => setActiveMediaIndex((i) => (i + 1) % media.length)}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 bg-black/60 hover:bg-black/80 text-white rounded-full w-9 h-9 flex items-center justify-center cursor-pointer transition-colors z-10"
+                    >
+                      <ChevronRight className="w-5 h-5" />
+                    </button>
+                  </>
+                )}
+
+                <span className="absolute bottom-3 left-3 sm:bottom-4 sm:left-4 font-sans text-[10px] font-black uppercase tracking-[0.25em] text-black bg-luxury-gold px-3 py-1 rounded">
+                  {selectedItem.category}
+                </span>
+              </div>
+
+              {/* Thumbnail strip */}
+              {media.length > 1 && (
+                <div className="grid grid-cols-6 sm:grid-cols-8 gap-2 p-4 sm:p-5 pb-0">
+                  {media.map((m, i) => (
+                    <button
+                      key={m.id}
+                      type="button"
+                      onClick={() => setActiveMediaIndex(i)}
+                      className={`relative aspect-square rounded overflow-hidden border-2 transition-all cursor-pointer ${
+                        i === activeMediaIndex ? 'border-luxury-gold' : 'border-transparent opacity-60 hover:opacity-100'
+                      }`}
+                    >
+                      {m.isVideo ? (
+                        <div className="w-full h-full bg-black flex items-center justify-center">
+                          <PlayCircle className="w-4 h-4 text-luxury-gold" />
+                        </div>
+                      ) : (
+                        <img src={m.url} alt="" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {/* Details */}
+              <div className="p-5 sm:p-8">
+                <div className="flex flex-wrap items-center gap-2.5 text-gray-500 mb-3">
+                  <Calendar className="w-4 h-4 text-luxury-gold" />
+                  <span className="font-mono text-xs uppercase tracking-widest text-gray-400 font-bold">
+                    {selectedItem.date}
+                  </span>
+                  <span className="text-gray-700 hidden sm:inline">•</span>
+                  <span className="font-sans text-xs uppercase tracking-widest text-luxury-gold font-bold flex items-center gap-1">
+                    <Award className="w-3.5 h-3.5" /> {selectedItem.category === 'Events' ? 'Upcoming Event' : 'Approved Project'}
+                  </span>
+                </div>
+
+                <h3 className="font-display text-xl sm:text-2xl md:text-3xl font-black text-white uppercase tracking-tight mb-4">
+                  {selectedItem.title}
+                </h3>
+
+                <div className="h-[1px] w-20 bg-luxury-gold mb-6" />
+
+                <p className="font-sans text-sm sm:text-base text-gray-300 leading-relaxed">
+                  {selectedItem.description}
+                </p>
+
+                {/* Impact Callout block */}
+                <div className="mt-8 bg-jet-black/60 border border-gray-900/80 p-4 sm:p-5 rounded flex items-start gap-4">
+                  <div className="w-10 h-10 rounded-full bg-luxury-gold/5 border border-luxury-gold/20 flex items-center justify-center shrink-0">
+                    <Crown className="w-5 h-5 text-luxury-gold" />
+                  </div>
+                  <div>
+                    <h4 className="font-display text-xs font-black uppercase tracking-widest text-luxury-gold">
+                      {selectedItem.category === 'Events' ? 'Assembly Overview' : 'Movement Impact Summary'}
+                    </h4>
+                    <p className="font-sans text-xs text-gray-400 mt-1 leading-relaxed">
+                      {selectedItem.category === 'Events'
+                        ? 'This is one of our upcoming sovereign assemblies. Head to the Upcoming Events section for full date, time, and location details.'
+                        : 'This project is a cornerstone of our community empowerment model. Fully supported by collective contributions, De Elites Family ensures direct allocation, transparent auditing, and sustainable execution for all local initiatives.'}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Modal Footer */}
+              <div className="bg-jet-black/80 p-4 sm:p-6 border-t border-gray-900 flex justify-end gap-3 sticky bottom-0">
+                <button
+                  onClick={() => setSelectedItem(null)}
+                  className="px-6 py-2.5 bg-luxury-gold hover:bg-luxury-gold-dark text-black font-sans font-black tracking-widest text-xs uppercase rounded transition-colors cursor-pointer"
+                >
+                  Close
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        );
+      })()}
     </section>
   );
 }

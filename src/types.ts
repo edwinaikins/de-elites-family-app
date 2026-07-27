@@ -28,6 +28,11 @@ export interface GalleryItem {
   description: string;
   date: string;
   isVideo?: boolean;
+  // Additional photos/videos beyond the single cover `image` above, added
+  // via the CMS's "EDIT MILESTONE EVENT" panel. The public Legacy Gallery
+  // grid still shows just the cover, but the spotlight modal lets visitors
+  // browse every file here alongside it (see MediaItem below).
+  media?: MediaItem[];
 }
 
 export interface Shoutout {
@@ -57,11 +62,12 @@ export interface Member {
   featured?: boolean;
 }
 
-// One photo or video belonging to a specific event's own gallery — distinct
-// from the event's single `image` banner. Uploaded in bulk via the CMS
-// Events tab; shown as a "View Gallery" lightbox on that event's card and
-// also merged into the public Legacy Gallery, tagged with the event.
-export interface EventMediaItem {
+// One photo or video belonging to a larger collection — an event's own
+// gallery (EliteEvent.media) or a Legacy Gallery milestone's extra media
+// (GalleryItem.media) — distinct from that item's single cover `image`.
+// Uploaded in bulk via the CMS, and browsable as a lightbox on the public
+// site alongside the cover.
+export interface MediaItem {
   id: string;
   url: string;
   isVideo?: boolean;
@@ -83,8 +89,8 @@ export interface EliteEvent {
   // Left unset or 0 for free events.
   price?: number;
   currency?: string;
-  // This event's own photo/video collection (see EventMediaItem above).
-  media?: EventMediaItem[];
+  // This event's own photo/video collection (see MediaItem above).
+  media?: MediaItem[];
 }
 
 export interface HeroConfig {

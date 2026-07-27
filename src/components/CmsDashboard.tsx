@@ -10,7 +10,7 @@ import {
 import { useCms } from '../context/CmsContext';
 import { ImageUpload } from './ImageUpload';
 import { BulkMediaUpload } from './BulkMediaUpload';
-import { Pillar, Leader, GalleryItem, EliteEvent, EventMediaItem, HeroConfig, CmsUser, MemberApplication, MemberAccount, WelfareDuesPayment, EventPayment, AdminPaymentRecord } from '../types';
+import { Pillar, Leader, GalleryItem, EliteEvent, MediaItem, HeroConfig, CmsUser, MemberApplication, MemberAccount, WelfareDuesPayment, EventPayment, AdminPaymentRecord } from '../types';
 import { fetchMemberApplications, updateMemberApplicationStatus, deleteMemberApplication, UploadedMediaItem } from '../lib/cmsClient';
 import {
   fetchAllMemberAccounts, createMemberAccount, updateMemberAccount, deleteMemberAccount,
@@ -519,6 +519,27 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
     );
   };
 
+  // Appends bulk-uploaded photos/videos to a single milestone's extra media
+  // collection (on top of its single cover `image`), from the "EDIT
+  // MILESTONE EVENT" panel. Shown in the spotlight lightbox on the public
+  // Legacy Gallery once saved.
+  const handleGalleryMediaUpload = (itemId: string, items: UploadedMediaItem[]) => {
+    if (!items.length) return;
+    const newMedia: MediaItem[] = items.map((it, i) => ({
+      id: `gm-${Date.now()}-${i}`,
+      url: it.url,
+      isVideo: it.isVideo,
+    }));
+    setLocalGallery(prev => prev.map(g => g.id === itemId ? { ...g, media: [...(g.media || []), ...newMedia] } : g));
+    triggerNotification(
+      `${newMedia.length} file${newMedia.length === 1 ? '' : 's'} added to this milestone's gallery — click "Save All gallery" to publish.`
+    );
+  };
+
+  const handleDeleteGalleryMedia = (itemId: string, mediaId: string) => {
+    setLocalGallery(prev => prev.map(g => g.id === itemId ? { ...g, media: (g.media || []).filter(m => m.id !== mediaId) } : g));
+  };
+
   // APPLICATIONS ACTIONS (server-backed, not part of local CmsDatabase state)
   const handleApplicationStatusChange = async (id: string, status: MemberApplication['status']) => {
     try {
@@ -684,7 +705,7 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
   // Legacy Gallery tagged with this event once saved.
   const handleEventMediaUpload = (eventId: string, items: UploadedMediaItem[]) => {
     if (!items.length) return;
-    const newMedia: EventMediaItem[] = items.map((it, i) => ({
+    const newMedia: MediaItem[] = items.map((it, i) => ({
       id: `em-${Date.now()}-${i}`,
       url: it.url,
       isVideo: it.isVideo,
@@ -1347,6 +1368,42 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                                 aspectRatio="banner"
                               />
                             )}
+
+                            <div className="space-y-3">
+                              <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">
+                                Additional Photos & Videos {item.media && item.media.length > 0 ? `(${item.media.length})` : ''}
+                              </label>
+                              <BulkMediaUpload onUploaded={(uploaded) => handleGalleryMediaUpload(item.id, uploaded)} />
+                              {item.media && item.media.length > 0 && (
+                                <div className="grid grid-cols-4 sm:grid-cols-6 gap-2">
+                                  {item.media.map((m) => (
+                                    <div
+                                      key={m.id}
+                                      className="relative group aspect-square rounded overflow-hidden border border-gray-800 bg-black"
+                                    >
+                                      {m.isVideo ? (
+                                        <div className="w-full h-full flex items-center justify-center">
+                                          <Film className="w-4 h-4 text-luxury-gold" />
+                                        </div>
+                                      ) : (
+                                        <img src={m.url} alt="" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
+                                      )}
+                                      <button
+                                        type="button"
+                                        onClick={() => handleDeleteGalleryMedia(item.id, m.id)}
+                                        className="absolute inset-0 bg-black/70 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity cursor-pointer"
+                                        title="Remove from this milestone's gallery"
+                                      >
+                                        <Trash2 className="w-4 h-4 text-red-400" />
+                                      </button>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                              <p className="text-[9px] text-gray-500 font-sans">
+                                On top of the cover above, browsable in the spotlight lightbox on the public Legacy Gallery.
+                              </p>
+                            </div>
 
                             <div className="flex flex-col gap-1.5">
                               <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">Milestone Summary Description</label>
