@@ -11,7 +11,7 @@ interface MemberAuthContextType {
   isPortalOpen: boolean;
   openPortal: () => void;
   closePortal: () => void;
-  login: (email: string, password: string) => Promise<void>;
+  login: (username: string, password: string) => Promise<void>;
   logout: () => void;
   refreshProfile: () => Promise<void>;
   updateBio: (update: MemberProfileUpdate) => Promise<void>;
@@ -57,8 +57,8 @@ export function MemberAuthProvider({ children }: { children: React.ReactNode }) 
     };
   }, [token, logout]);
 
-  const login = useCallback(async (email: string, password: string) => {
-    const { token: newToken, member: newMember } = await memberLogin(email, password);
+  const login = useCallback(async (username: string, password: string) => {
+    const { token: newToken, member: newMember } = await memberLogin(username, password);
     localStorage.setItem(TOKEN_STORAGE_KEY, newToken);
     setToken(newToken);
     setMember(newMember);

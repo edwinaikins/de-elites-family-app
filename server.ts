@@ -314,6 +314,23 @@ async function initDb() {
     await db.query(`ALTER TABLE welfare_dues_payments ADD COLUMN IF NOT EXISTS channel TEXT;`);
     await db.query(`ALTER TABLE event_payments ADD COLUMN IF NOT EXISTS channel TEXT;`);
 
+    // Migration: members now log in with a username instead of their email
+    // (email is kept — it's still needed for Paystack checkout and admin
+    // reconciliation). `username` is nullable here purely so this migration
+    // doesn't break existing production rows that predate it; a partial
+    // unique index (below) enforces uniqueness only among rows that HAVE a
+    // username set. Any pre-existing member accounts need a username
+    // assigned by an admin (Member Accounts tab) before they can log in
+    // again. `must_change_password` powers a "you're using a temporary
+    // password" prompt right after login — it defaults to false here so
+    // existing members aren't unexpectedly forced into it, but is set to
+    // true for every newly created account and every admin password reset.
+    await db.query(`ALTER TABLE member_accounts ADD COLUMN IF NOT EXISTS username TEXT;`);
+    await db.query(`ALTER TABLE member_accounts ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT false;`);
+    await db.query(
+      `CREATE UNIQUE INDEX IF NOT EXISTS member_accounts_username_unique ON member_accounts (username) WHERE username IS NOT NULL;`
+    );
+
     for (const sec of SECTIONS) {
       const existing = await db.query("SELECT 1 FROM cms_sections WHERE section = $1", [sec]);
       if (existing.rowCount === 0) {
@@ -612,6 +629,7 @@ function mapMemberRow(row: any) {
   return {
     id: row.id,
     fullName: row.full_name,
+    username: row.username || "",
     email: row.email,
     bio: row.bio || "",
     image: row.image || undefined,
@@ -621,6 +639,7 @@ function mapMemberRow(row: any) {
     duesAmount: Number(row.dues_amount),
     currency: row.currency,
     status: row.status,
+    mustChangePassword: row.must_change_password === true,
     createdAt: row.created_at,
   };
 }
@@ -667,22 +686,22 @@ async function getEventById(eventId: string) {
 
 app.post("/api/member/login", async (req, res) => {
   try {
-    const { email, password } = req.body || {};
-    if (!email || !password) {
-      return res.status(400).json({ success: false, error: "Email and password are required." });
+    const { username, password } = req.body || {};
+    if (!username || !password) {
+      return res.status(400).json({ success: false, error: "Username and password are required." });
     }
     const db = getPool();
-    const result = await db.query("SELECT * FROM member_accounts WHERE email = $1", [String(email).trim().toLowerCase()]);
+    const result = await db.query("SELECT * FROM member_accounts WHERE username = $1", [String(username).trim().toLowerCase()]);
     const row = result.rows[0];
     if (!row) {
-      return res.status(401).json({ success: false, error: "Invalid email or password." });
+      return res.status(401).json({ success: false, error: "Invalid username or password." });
     }
     if (row.status !== "active") {
       return res.status(403).json({ success: false, error: "This account has been suspended. Contact an admin." });
     }
     const matches = await bcrypt.compare(password, row.password_hash);
     if (!matches) {
-      return res.status(401).json({ success: false, error: "Invalid email or password." });
+      return res.status(401).json({ success: false, error: "Invalid username or password." });
     }
     const token = jwt.sign({ memberId: row.id }, getJwtSecret(), { expiresIn: "30d" });
     res.json({ success: true, data: { token, member: mapMemberRow(row) } });
@@ -741,8 +760,11 @@ app.post("/api/member/change-password", requireMemberAuth, async (req: any, res)
     const matches = await bcrypt.compare(currentPassword, row.password_hash);
     if (!matches) return res.status(401).json({ success: false, error: "Current password is incorrect." });
     const newHash = await bcrypt.hash(String(newPassword), 10);
-    await db.query("UPDATE member_accounts SET password_hash = $2 WHERE id = $1", [req.memberId, newHash]);
-    res.json({ success: true, message: "Password updated." });
+    const updated = await db.query(
+      "UPDATE member_accounts SET password_hash = $2, must_change_password = false WHERE id = $1 RETURNING *",
+      [req.memberId, newHash]
+    );
+    res.json({ success: true, message: "Password updated.", data: mapMemberRow(updated.rows[0]) });
   } catch (error: any) {
     console.error("Failed to change member password:", error);
     res.status(500).json({ success: false, error: error.message || "Failed to change password." });
@@ -786,14 +808,25 @@ app.get("/api/admin/members", async (req, res) => {
 app.post("/api/admin/members", async (req, res) => {
   try {
     const b = req.body || {};
-    if (!b.fullName || !b.email || !b.password) {
-      return res.status(400).json({ success: false, error: "fullName, email, and password are required." });
+    if (!b.fullName || !b.username || !b.email || !b.password) {
+      return res.status(400).json({ success: false, error: "fullName, username, email, and password are required." });
     }
     if (String(b.password).length < 8) {
       return res.status(400).json({ success: false, error: "Password must be at least 8 characters." });
     }
+    const username = String(b.username).trim().toLowerCase();
+    if (!/^[a-z0-9._-]{3,32}$/.test(username)) {
+      return res.status(400).json({
+        success: false,
+        error: "Username must be 3-32 characters and can only contain letters, numbers, dots, underscores, and hyphens.",
+      });
+    }
     const email = String(b.email).trim().toLowerCase();
     const db = getPool();
+    const existingUsername = await db.query("SELECT 1 FROM member_accounts WHERE username = $1", [username]);
+    if ((existingUsername.rowCount ?? 0) > 0) {
+      return res.status(409).json({ success: false, error: "This username is already taken." });
+    }
     const existing = await db.query("SELECT 1 FROM member_accounts WHERE email = $1", [email]);
     if ((existing.rowCount ?? 0) > 0) {
       return res.status(409).json({ success: false, error: "An account with this email already exists." });
@@ -801,11 +834,12 @@ app.post("/api/admin/members", async (req, res) => {
     const passwordHash = await bcrypt.hash(String(b.password), 10);
     const id = `member-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const result = await db.query(
-      `INSERT INTO member_accounts (id, full_name, email, password_hash, bio, image, chapter, role, phone, dues_amount, currency, status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'active') RETURNING *`,
+      `INSERT INTO member_accounts (id, full_name, username, email, password_hash, bio, image, chapter, role, phone, dues_amount, currency, status, must_change_password)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'active',true) RETURNING *`,
       [
         id,
         String(b.fullName).trim(),
+        username,
         email,
         passwordHash,
         typeof b.bio === "string" ? b.bio : "",
@@ -830,12 +864,29 @@ app.patch("/api/admin/members/:id", async (req, res) => {
     const b = req.body || {};
     const db = getPool();
 
+    if (typeof b.username === "string" && b.username.trim()) {
+      const username = b.username.trim().toLowerCase();
+      if (!/^[a-z0-9._-]{3,32}$/.test(username)) {
+        return res.status(400).json({
+          success: false,
+          error: "Username must be 3-32 characters and can only contain letters, numbers, dots, underscores, and hyphens.",
+        });
+      }
+      const existingUsername = await db.query("SELECT 1 FROM member_accounts WHERE username = $1 AND id != $2", [username, id]);
+      if ((existingUsername.rowCount ?? 0) > 0) {
+        return res.status(409).json({ success: false, error: "This username is already taken." });
+      }
+      await db.query("UPDATE member_accounts SET username = $2 WHERE id = $1", [id, username]);
+    }
+
     if (b.resetPassword) {
       if (String(b.resetPassword).length < 8) {
         return res.status(400).json({ success: false, error: "New password must be at least 8 characters." });
       }
+      // A reset password is a new temporary password — the member is
+      // prompted to replace it with their own the next time they log in.
       const passwordHash = await bcrypt.hash(String(b.resetPassword), 10);
-      await db.query("UPDATE member_accounts SET password_hash = $2 WHERE id = $1", [id, passwordHash]);
+      await db.query("UPDATE member_accounts SET password_hash = $2, must_change_password = true WHERE id = $1", [id, passwordHash]);
     }
 
     const result = await db.query(

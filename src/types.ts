@@ -128,6 +128,12 @@ export interface CmsUser {
 export interface MemberAccount {
   id: string;
   fullName: string;
+  // What the member actually logs in with (see /api/member/login). Chosen
+  // by the admin when the account is created; can be edited later from the
+  // Member Accounts tab. Email is kept separately — still required for
+  // Paystack checkout and admin reconciliation, just no longer the login
+  // credential.
+  username: string;
   email: string;
   bio: string;
   image?: string;
@@ -140,6 +146,10 @@ export interface MemberAccount {
   duesAmount: number;
   currency: string;
   status: 'active' | 'suspended';
+  // True right after account creation or an admin password reset — the
+  // portal shows a mandatory "set a new password" screen on next login
+  // until the member replaces the temporary password themselves.
+  mustChangePassword: boolean;
   createdAt: string;
 }
 

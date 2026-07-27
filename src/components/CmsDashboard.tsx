@@ -86,6 +86,7 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
 
   // New member account creation form
   const [newMemberName, setNewMemberName] = useState('');
+  const [newMemberUsername, setNewMemberUsername] = useState('');
   const [newMemberEmail, setNewMemberEmail] = useState('');
   const [newMemberPassword, setNewMemberPassword] = useState('');
   const [newMemberDues, setNewMemberDues] = useState('');
@@ -95,6 +96,9 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
   // Draft edits for the currently selected member account (dues amount etc.)
   const [memberEditDues, setMemberEditDues] = useState('');
   const [memberEditStatus, setMemberEditStatus] = useState<'active' | 'suspended'>('active');
+  // Members log in with this, not their email (see /api/member/login) — pre-
+  // migration accounts may have this blank until an admin assigns one here.
+  const [memberEditUsername, setMemberEditUsername] = useState('');
   const [memberResetPassword, setMemberResetPassword] = useState('');
 
   // Reconciliation: every dues + event payment across every member ("who
@@ -350,6 +354,7 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
     if (!selected) return;
     setMemberEditDues(String(selected.duesAmount ?? 0));
     setMemberEditStatus(selected.status);
+    setMemberEditUsername(selected.username || '');
     setMemberResetPassword('');
     setSelectedMemberHistoryLoading(true);
     Promise.all([fetchMemberDuesHistoryAdmin(selected.id), fetchMemberEventPaymentsAdmin(selected.id)])
@@ -566,8 +571,8 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
   const handleCreateMemberAccount = async (e: React.FormEvent) => {
     e.preventDefault();
     setMemberAccountsError(null);
-    if (!newMemberName.trim() || !newMemberEmail.trim() || !newMemberPassword.trim()) {
-      setMemberAccountsError('Full name, email, and a temporary password are required.');
+    if (!newMemberName.trim() || !newMemberUsername.trim() || !newMemberEmail.trim() || !newMemberPassword.trim()) {
+      setMemberAccountsError('Full name, username, email, and a temporary password are required.');
       return;
     }
     if (newMemberPassword.trim().length < 8) {
@@ -577,6 +582,7 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
     try {
       const created = await createMemberAccount({
         fullName: newMemberName.trim(),
+        username: newMemberUsername.trim(),
         email: newMemberEmail.trim(),
         password: newMemberPassword.trim(),
         duesAmount: newMemberDues ? Number(newMemberDues) : 0,
@@ -585,12 +591,13 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
       });
       setMemberAccounts(prev => [created, ...prev]);
       setNewMemberName('');
+      setNewMemberUsername('');
       setNewMemberEmail('');
       setNewMemberPassword('');
       setNewMemberDues('');
       setNewMemberChapter('');
       setNewMemberRole('');
-      triggerNotification(`Member account created for ${created.fullName}. Share the temporary password with them securely.`);
+      triggerNotification(`Member account created for ${created.fullName}. Share the username and temporary password with them securely — they'll be prompted to set their own password on first login.`);
     } catch (err: any) {
       setMemberAccountsError(err.message || 'Failed to create member account');
     }
@@ -601,11 +608,16 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
       const updated = await updateMemberAccount(id, {
         duesAmount: memberEditDues ? Number(memberEditDues) : 0,
         status: memberEditStatus,
+        ...(memberEditUsername.trim() ? { username: memberEditUsername.trim() } : {}),
         ...(memberResetPassword.trim() ? { resetPassword: memberResetPassword.trim() } : {}),
       });
       setMemberAccounts(prev => prev.map(m => m.id === id ? updated : m));
       setMemberResetPassword('');
-      triggerNotification('Member account updated.');
+      triggerNotification(
+        memberResetPassword.trim()
+          ? 'Member account updated. A new temporary password is set — the member will be asked to change it on next login.'
+          : 'Member account updated.'
+      );
     } catch (err: any) {
       setMemberAccountsError(err.message || 'Failed to update member account');
     }
@@ -2245,6 +2257,11 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                                     {m.fullName}
                                   </h4>
                                   <p className="font-sans text-[9px] text-gray-500 truncate">{m.email}</p>
+                                  {m.username ? (
+                                    <p className="font-mono text-[9px] text-luxury-gold/70 truncate">@{m.username}</p>
+                                  ) : (
+                                    <p className="font-sans text-[9px] text-red-400/80 font-bold uppercase tracking-wide">No username — can't log in</p>
+                                  )}
                                   <span className={`inline-block mt-1 text-[8px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded ${
                                     m.status === 'active' ? 'bg-green-950/40 text-green-400' : 'bg-red-950/40 text-red-400'
                                   }`}>
@@ -2277,6 +2294,15 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                             placeholder="Full Name"
                             value={newMemberName}
                             onChange={(e) => setNewMemberName(e.target.value)}
+                            className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold w-full"
+                          />
+                          <input
+                            type="text"
+                            autoCapitalize="none"
+                            autoCorrect="off"
+                            placeholder="Username (what they'll log in with)"
+                            value={newMemberUsername}
+                            onChange={(e) => setNewMemberUsername(e.target.value)}
                             className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold w-full"
                           />
                           <input
@@ -2340,6 +2366,21 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                                   {m.fullName}
                                 </h3>
                                 <span className="text-[10px] font-mono text-gray-500">{m.email}</span>
+                              </div>
+
+                              <div className="flex flex-col gap-1.5">
+                                <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">
+                                  Username (login)
+                                </label>
+                                <input
+                                  type="text"
+                                  autoCapitalize="none"
+                                  autoCorrect="off"
+                                  placeholder={m.username ? '' : 'Not set — member cannot log in yet'}
+                                  value={memberEditUsername}
+                                  onChange={(e) => setMemberEditUsername(e.target.value)}
+                                  className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold"
+                                />
                               </div>
 
                               <div className="grid grid-cols-2 gap-4">

@@ -15,11 +15,11 @@ function authHeaders(token: string): HeadersInit {
   };
 }
 
-export async function memberLogin(email: string, password: string): Promise<{ token: string; member: MemberAccount }> {
+export async function memberLogin(username: string, password: string): Promise<{ token: string; member: MemberAccount }> {
   const res = await fetch('/api/member/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify({ username, password }),
   });
   return handleJson(res);
 }
@@ -110,6 +110,7 @@ export async function fetchAllMemberAccounts(): Promise<MemberAccount[]> {
 
 export async function createMemberAccount(payload: {
   fullName: string;
+  username: string;
   email: string;
   password: string;
   duesAmount?: number;
@@ -127,7 +128,7 @@ export async function createMemberAccount(payload: {
 
 export async function updateMemberAccount(
   id: string,
-  update: Partial<{ fullName: string; chapter: string; role: string; duesAmount: number; currency: string; status: string; resetPassword: string }>
+  update: Partial<{ fullName: string; username: string; chapter: string; role: string; duesAmount: number; currency: string; status: string; resetPassword: string }>
 ): Promise<MemberAccount> {
   const res = await fetch(`/api/admin/members/${encodeURIComponent(id)}`, {
     method: 'PATCH',

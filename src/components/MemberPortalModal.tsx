@@ -45,7 +45,7 @@ function formatChannel(channel?: string): string {
 }
 
 export default function MemberPortalModal() {
-  const { member, token, loading, isPortalOpen, closePortal, login, logout, updateBio } = useMemberAuth();
+  const { member, token, loading, isPortalOpen, closePortal, login, logout, updateBio, refreshProfile } = useMemberAuth();
   const { events } = useCms();
   const { paidEventIds, payingId, errorById, payForEvent } = useEventPayments();
   const { mock: mockPayments } = usePaymentsConfig();
@@ -53,7 +53,7 @@ export default function MemberPortalModal() {
   const [activeTab, setActiveTab] = useState<PortalTab>('profile');
 
   // Login form state
-  const [loginEmail, setLoginEmail] = useState('');
+  const [loginUsername, setLoginUsername] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [loginError, setLoginError] = useState('');
   const [loginSubmitting, setLoginSubmitting] = useState(false);
@@ -133,7 +133,7 @@ export default function MemberPortalModal() {
   if (!isPortalOpen) return null;
 
   const handleClose = () => {
-    setLoginEmail('');
+    setLoginUsername('');
     setLoginPassword('');
     setLoginError('');
     setShowPasswordForm(false);
@@ -149,13 +149,13 @@ export default function MemberPortalModal() {
   const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoginError('');
-    if (!loginEmail.trim() || !loginPassword.trim()) {
-      setLoginError('Please enter both your email and password.');
+    if (!loginUsername.trim() || !loginPassword.trim()) {
+      setLoginError('Please enter both your username and password.');
       return;
     }
     setLoginSubmitting(true);
     try {
-      await login(loginEmail.trim(), loginPassword);
+      await login(loginUsername.trim(), loginPassword);
       setLoginPassword('');
     } catch (err: any) {
       setLoginError(err.message || 'Login failed. Please check your credentials.');
@@ -208,6 +208,10 @@ export default function MemberPortalModal() {
       setPasswordSuccess(true);
       setCurrentPassword('');
       setNewPassword('');
+      // Pulls the fresh member record (mustChangePassword now false) so the
+      // mandatory "set a new password" screen below drops away automatically
+      // the moment a temporary password is replaced.
+      await refreshProfile();
     } catch (err: any) {
       setPasswordError(err.message || 'Failed to change password.');
     } finally {
@@ -298,12 +302,14 @@ export default function MemberPortalModal() {
 
               <form onSubmit={handleLoginSubmit} className="space-y-5">
                 <div className="flex flex-col gap-1.5">
-                  <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">Email</label>
+                  <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">Username</label>
                   <input
-                    type="email"
-                    value={loginEmail}
-                    onChange={(e) => setLoginEmail(e.target.value)}
-                    placeholder="you@example.com"
+                    type="text"
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    value={loginUsername}
+                    onChange={(e) => setLoginUsername(e.target.value)}
+                    placeholder="yourusername"
                     className="bg-jet-black border border-gray-800 rounded px-4 py-3 text-sm text-white focus:outline-none focus:border-luxury-gold placeholder:text-gray-700"
                   />
                 </div>
@@ -339,6 +345,82 @@ export default function MemberPortalModal() {
               <p className="mt-8 text-center text-[10px] text-gray-600 uppercase tracking-wider font-semibold leading-relaxed">
                 Don't have portal access yet? Ask a family administrator to set up your account.
               </p>
+            </div>
+          ) : member.mustChangePassword ? (
+            // --- MANDATORY PASSWORD CHANGE VIEW ---
+            // Shown right after login whenever an admin created this account
+            // or reset its password — the member is signed in but blocked
+            // from the rest of the portal until they swap the temporary
+            // password for one of their own choosing.
+            <div className="p-8 sm:p-10">
+              <div className="text-center mb-8">
+                <div className="w-16 h-16 rounded-full border border-luxury-gold flex items-center justify-center bg-jet-black mx-auto mb-4 shadow-[0_0_20px_rgba(212,175,55,0.2)]">
+                  <KeyRound className="w-8 h-8 text-luxury-gold animate-pulse" />
+                </div>
+                <h2 className="font-display text-xl font-black text-white uppercase tracking-wider">
+                  Set a New Password
+                </h2>
+                <p className="font-sans text-[10px] text-gray-500 mt-2 leading-relaxed max-w-xs mx-auto">
+                  You're signed in with a temporary password. Choose a new one to continue to your portal, {member.fullName.split(' ')[0]}.
+                </p>
+              </div>
+
+              <form onSubmit={handleChangePassword} className="space-y-4 max-w-sm mx-auto">
+                <div className="flex flex-col gap-1.5">
+                  <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">
+                    Temporary Password
+                  </label>
+                  <input
+                    type="password"
+                    value={currentPassword}
+                    onChange={(e) => setCurrentPassword(e.target.value)}
+                    placeholder="The password you just logged in with"
+                    className="bg-jet-black border border-gray-800 rounded px-4 py-3 text-sm text-white focus:outline-none focus:border-luxury-gold placeholder:text-gray-700"
+                  />
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">
+                    New Password
+                  </label>
+                  <input
+                    type="password"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    placeholder="Min. 8 characters"
+                    className="bg-jet-black border border-gray-800 rounded px-4 py-3 text-sm text-white focus:outline-none focus:border-luxury-gold placeholder:text-gray-700"
+                  />
+                </div>
+
+                {passwordError && (
+                  <div className="flex items-center gap-2 text-xs text-red-500 bg-red-500/10 border border-red-500/20 p-3 rounded">
+                    <AlertCircle className="shrink-0 w-4 h-4" />
+                    <span>{passwordError}</span>
+                  </div>
+                )}
+                {passwordSuccess && (
+                  <div className="flex items-center gap-2 text-xs text-green-400 bg-green-500/10 border border-green-500/20 p-3 rounded">
+                    <CheckCircle2 className="shrink-0 w-4 h-4" />
+                    <span>Password updated — taking you to your portal...</span>
+                  </div>
+                )}
+
+                <button
+                  type="submit"
+                  disabled={passwordSubmitting}
+                  className="w-full py-3.5 bg-gradient-to-r from-luxury-gold to-luxury-gold-dark text-black font-sans font-black tracking-widest text-xs uppercase rounded transition-all duration-300 shadow-[0_4px_15px_rgba(212,175,55,0.2)] hover:shadow-[0_0_25px_rgba(212,175,55,0.4)] hover:scale-[1.02] active:scale-[0.98] cursor-pointer flex items-center justify-center gap-2 disabled:opacity-60"
+                >
+                  {passwordSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <KeyRound className="w-4 h-4" />}
+                  Set New Password
+                </button>
+
+                <button
+                  type="button"
+                  onClick={logout}
+                  className="w-full text-center text-[10px] text-gray-600 hover:text-gray-400 uppercase tracking-wider font-semibold transition-colors cursor-pointer"
+                >
+                  Log out instead
+                </button>
+              </form>
             </div>
           ) : (
             // --- DASHBOARD VIEW ---
