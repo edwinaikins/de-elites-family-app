@@ -194,10 +194,15 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
   }, [payments, paymentsTypeFilter, paymentsStatusFilter, paymentsSearch]);
 
   const paymentsTotalsByCurrency = React.useMemo(() => {
-    const totals: Record<string, number> = {};
+    const totals: { currency: string; total: number }[] = [];
     for (const p of filteredPayments) {
       if (p.status !== 'success') continue;
-      totals[p.currency] = (totals[p.currency] || 0) + p.amount;
+      const existing = totals.find((t) => t.currency === p.currency);
+      if (existing) {
+        existing.total += p.amount;
+      } else {
+        totals.push({ currency: p.currency, total: p.amount });
+      }
     }
     return totals;
   }, [filteredPayments]);
@@ -2485,14 +2490,14 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                   </div>
 
                   {/* Totals */}
-                  {Object.keys(paymentsTotalsByCurrency).length > 0 && (
+                  {paymentsTotalsByCurrency.length > 0 && (
                     <div className="flex flex-wrap gap-2">
-                      {Object.entries(paymentsTotalsByCurrency).map(([currency, total]) => (
+                      {paymentsTotalsByCurrency.map((entry) => (
                         <span
-                          key={currency}
+                          key={entry.currency}
                           className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-green-950/20 border border-green-900/40 text-green-400 text-[10px] font-mono font-bold"
                         >
-                          Collected: {currency} {total.toFixed(2)}
+                          Collected: {entry.currency} {entry.total.toFixed(2)}
                         </span>
                       ))}
                     </div>
