@@ -199,6 +199,26 @@ export interface AdminPaymentRecord {
   createdAt: string;
 }
 
+// POST /api/admin/payments — an admin manually logging a payment collected
+// outside Paystack (cash, bank transfer, cheque, etc.) so reconciliation
+// stays complete for offline collections.
+export interface ManualPaymentInput {
+  type: 'dues' | 'event';
+  memberId: string;
+  amount: number;
+  currency?: string;
+  // Free text, e.g. "cash", "bank transfer", "cheque" — defaults to "cash".
+  channel?: string;
+  status?: PaymentStatus;
+  // Required when type === 'dues', e.g. "2026-08".
+  period?: string;
+  // For type === 'event': pass eventId to pull the title from an existing
+  // CMS event, or eventTitle directly for a one-off/past event that may no
+  // longer be listed.
+  eventId?: string;
+  eventTitle?: string;
+}
+
 // Returned by POST /api/payments/*/initialize — everything the frontend
 // needs to open the Paystack Inline checkout. The amount/reference are
 // generated server-side so the client can never manipulate what gets

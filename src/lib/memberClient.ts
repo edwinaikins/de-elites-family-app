@@ -1,4 +1,4 @@
-import { MemberAccount, MemberProfileUpdate, WelfareDuesPayment, EventPayment, PaymentInitResponse, DuesBalance, AdminPaymentRecord } from '../types';
+import { MemberAccount, MemberProfileUpdate, WelfareDuesPayment, EventPayment, PaymentInitResponse, DuesBalance, AdminPaymentRecord, ManualPaymentInput } from '../types';
 
 async function handleJson<T>(res: Response): Promise<T> {
   const result = await res.json().catch(() => ({}));
@@ -157,4 +157,18 @@ export async function fetchMemberEventPaymentsAdmin(id: string): Promise<EventPa
 export async function fetchAllPaymentsAdmin(): Promise<AdminPaymentRecord[]> {
   const res = await fetch('/api/admin/payments');
   return handleJson(res);
+}
+
+export async function createManualPayment(input: ManualPaymentInput): Promise<AdminPaymentRecord> {
+  const res = await fetch('/api/admin/payments', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  return handleJson(res);
+}
+
+export async function deleteAdminPayment(type: 'dues' | 'event', id: string): Promise<void> {
+  const res = await fetch(`/api/admin/payments/${type}/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  await handleJson(res);
 }

@@ -811,6 +811,24 @@ app.get("/api/admin/members/:id/event-payments", async (req, res) => {
   }
 });
 
+function mapAdminPaymentRow(row: any) {
+  return {
+    id: row.id,
+    type: row.type,
+    memberId: row.member_id,
+    memberName: row.full_name,
+    memberEmail: row.email,
+    label: row.label,
+    amount: Number(row.amount),
+    currency: row.currency,
+    channel: row.channel || undefined,
+    reference: row.reference,
+    status: row.status,
+    paidAt: row.paid_at || undefined,
+    createdAt: row.created_at,
+  };
+}
+
 // Reconciliation: every dues + event payment across every member, joined
 // with the member's name/email, newest first — the "who paid what" view
 // the CMS Payments tab renders. Combines both payment tables with a UNION
@@ -832,25 +850,101 @@ app.get("/api/admin/payments", async (req, res) => {
       JOIN member_accounts ma ON ma.id = ep.member_id
       ORDER BY created_at DESC
     `);
-    const data = result.rows.map((row: any) => ({
-      id: row.id,
-      type: row.type,
-      memberId: row.member_id,
-      memberName: row.full_name,
-      memberEmail: row.email,
-      label: row.label,
-      amount: Number(row.amount),
-      currency: row.currency,
-      channel: row.channel || undefined,
-      reference: row.reference,
-      status: row.status,
-      paidAt: row.paid_at || undefined,
-      createdAt: row.created_at,
-    }));
-    res.json({ success: true, data });
+    res.json({ success: true, data: result.rows.map(mapAdminPaymentRow) });
   } catch (error: any) {
     console.error("Failed to load admin payments:", error);
     res.status(500).json({ success: false, error: error.message || "Failed to load payments." });
+  }
+});
+
+// Manually log a payment collected outside Paystack (cash, bank transfer,
+// cheque, etc.) so reconciliation stays complete even for offline
+// collections. Defaults to status 'success' since a manual entry is
+// typically logged after the money already changed hands, but an admin can
+// still record 'pending' (a promise) or 'failed' (a bounced payment) for a
+// full paper trail.
+app.post("/api/admin/payments", async (req, res) => {
+  try {
+    const b = req.body || {};
+    const type = b.type === "event" ? "event" : b.type === "dues" ? "dues" : null;
+    if (!type) {
+      return res.status(400).json({ success: false, error: "type must be 'dues' or 'event'." });
+    }
+    const memberId = typeof b.memberId === "string" ? b.memberId : "";
+    if (!memberId) {
+      return res.status(400).json({ success: false, error: "A member is required." });
+    }
+    const amount = Number(b.amount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return res.status(400).json({ success: false, error: "Enter a valid amount greater than zero." });
+    }
+    const status = ["pending", "success", "failed"].includes(b.status) ? b.status : "success";
+
+    const db = getPool();
+    const memberRes = await db.query("SELECT * FROM member_accounts WHERE id = $1", [memberId]);
+    const member = memberRes.rows[0];
+    if (!member) return res.status(404).json({ success: false, error: "Member not found." });
+
+    const currency = typeof b.currency === "string" && b.currency.trim() ? b.currency.trim().toUpperCase() : member.currency;
+    const channel = typeof b.channel === "string" && b.channel.trim() ? b.channel.trim() : "cash";
+
+    let row: any;
+    if (type === "dues") {
+      const period = typeof b.period === "string" ? b.period.trim() : "";
+      if (!period) {
+        return res.status(400).json({ success: false, error: "A dues period (e.g. '2026-08') is required." });
+      }
+      const id = `dp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const reference = `manual-dues-${memberId}-${period}-${Date.now()}`;
+      const result = await db.query(
+        `INSERT INTO welfare_dues_payments (id, member_id, amount, currency, period, reference, status, channel, paid_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8, CASE WHEN $7 = 'success' THEN now() ELSE NULL END)
+         RETURNING *`,
+        [id, memberId, amount, currency, period, reference, status, channel]
+      );
+      row = { ...result.rows[0], full_name: member.full_name, email: member.email, type: "dues", label: result.rows[0].period };
+    } else {
+      let eventTitle = typeof b.eventTitle === "string" ? b.eventTitle.trim() : "";
+      const eventId = typeof b.eventId === "string" ? b.eventId.trim() : "";
+      if (eventId) {
+        const event = await getEventById(eventId);
+        if (event) eventTitle = event.title;
+      }
+      if (!eventTitle) {
+        return res.status(400).json({ success: false, error: "An event title is required." });
+      }
+      const id = `ep-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const reference = `manual-event-${memberId}-${Date.now()}`;
+      const result = await db.query(
+        `INSERT INTO event_payments (id, member_id, event_id, event_title, amount, currency, reference, status, channel, paid_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, CASE WHEN $8 = 'success' THEN now() ELSE NULL END)
+         RETURNING *`,
+        [id, memberId, eventId || "manual", eventTitle, amount, currency, reference, status, channel]
+      );
+      row = { ...result.rows[0], full_name: member.full_name, email: member.email, type: "event", label: result.rows[0].event_title };
+    }
+
+    res.json({ success: true, data: mapAdminPaymentRow(row) });
+  } catch (error: any) {
+    console.error("Failed to create manual payment:", error);
+    res.status(500).json({ success: false, error: error.message || "Failed to log payment." });
+  }
+});
+
+app.delete("/api/admin/payments/:type/:id", async (req, res) => {
+  try {
+    const { type, id } = req.params;
+    if (type !== "dues" && type !== "event") {
+      return res.status(400).json({ success: false, error: "type must be 'dues' or 'event'." });
+    }
+    const table = type === "dues" ? "welfare_dues_payments" : "event_payments";
+    const db = getPool();
+    const result = await db.query(`DELETE FROM ${table} WHERE id = $1`, [id]);
+    if (result.rowCount === 0) return res.status(404).json({ success: false, error: "Payment record not found." });
+    res.json({ success: true });
+  } catch (error: any) {
+    console.error("Failed to delete payment:", error);
+    res.status(500).json({ success: false, error: error.message || "Failed to delete payment." });
   }
 });
 

@@ -14,6 +14,7 @@ import { fetchMemberApplications, updateMemberApplicationStatus, deleteMemberApp
 import {
   fetchAllMemberAccounts, createMemberAccount, updateMemberAccount, deleteMemberAccount,
   fetchMemberDuesHistoryAdmin, fetchMemberEventPaymentsAdmin, fetchAllPaymentsAdmin,
+  createManualPayment, deleteAdminPayment,
 } from '../lib/memberClient';
 
 interface CmsDashboardProps {
@@ -22,6 +23,11 @@ interface CmsDashboardProps {
 }
 
 type TabType = 'pillars' | 'leaders' | 'gallery' | 'shoutouts' | 'events' | 'hero' | 'users' | 'applications' | 'memberAccounts' | 'payments';
+
+function currentPeriod(): string {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+}
 
 function formatPeriodLabel(period: string): string {
   const [year, month] = period.split('-').map(Number);
@@ -102,6 +108,22 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
   const [paymentsTypeFilter, setPaymentsTypeFilter] = useState<'all' | 'dues' | 'event'>('all');
   const [paymentsStatusFilter, setPaymentsStatusFilter] = useState<'all' | 'success' | 'pending' | 'failed'>('all');
 
+  // "Log Manual Payment" form — for cash, bank transfer, or any payment
+  // collected outside Paystack, so it still shows up in reconciliation.
+  const [showManualPaymentForm, setShowManualPaymentForm] = useState(false);
+  const [manualType, setManualType] = useState<'dues' | 'event'>('dues');
+  const [manualMemberId, setManualMemberId] = useState('');
+  const [manualPeriod, setManualPeriod] = useState(currentPeriod());
+  const [manualEventId, setManualEventId] = useState('');
+  const [manualEventTitle, setManualEventTitle] = useState('');
+  const [manualAmount, setManualAmount] = useState('');
+  const [manualCurrency, setManualCurrency] = useState('');
+  const [manualChannel, setManualChannel] = useState('cash');
+  const [manualChannelOther, setManualChannelOther] = useState('');
+  const [manualStatus, setManualStatus] = useState<'pending' | 'success' | 'failed'>('success');
+  const [manualSubmitting, setManualSubmitting] = useState(false);
+  const [manualFormError, setManualFormError] = useState('');
+
   // Track currently active item for editing or "new" state
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [isAddingNew, setIsAddingNew] = useState(false);
@@ -168,7 +190,10 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
     }
   }, [isOpen, activeTab, loadMemberAccounts]);
 
-  // Load the reconciliation payments list when that tab is opened
+  // Load the reconciliation payments list when that tab is opened — also
+  // make sure member accounts are loaded even if the admin never visited
+  // the Member Accounts tab first, since the manual-payment form needs the
+  // member picker populated.
   React.useEffect(() => {
     if (isOpen && activeTab === 'payments') {
       setPaymentsLoading(true);
@@ -177,6 +202,9 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
         .then(setPayments)
         .catch((err: any) => setPaymentsError(err.message || 'Failed to load payments'))
         .finally(() => setPaymentsLoading(false));
+      if (memberAccounts.length === 0) {
+        loadMemberAccounts();
+      }
     }
   }, [isOpen, activeTab]);
 
@@ -232,6 +260,88 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+  };
+
+  const resetManualPaymentForm = () => {
+    setManualType('dues');
+    setManualMemberId('');
+    setManualPeriod(currentPeriod());
+    setManualEventId('');
+    setManualEventTitle('');
+    setManualAmount('');
+    setManualCurrency('');
+    setManualChannel('cash');
+    setManualChannelOther('');
+    setManualStatus('success');
+    setManualFormError('');
+  };
+
+  const handleManualMemberChange = (id: string) => {
+    setManualMemberId(id);
+    const selected = memberAccounts.find((m) => m.id === id);
+    if (selected) setManualCurrency(selected.currency);
+  };
+
+  const handleManualEventChange = (id: string) => {
+    setManualEventId(id);
+    const selected = events.find((ev) => ev.id === id);
+    if (selected) setManualEventTitle(selected.title);
+  };
+
+  const handleCreateManualPayment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setManualFormError('');
+    if (!manualMemberId) {
+      setManualFormError('Select a member.');
+      return;
+    }
+    const amountNum = Number(manualAmount);
+    if (!Number.isFinite(amountNum) || amountNum <= 0) {
+      setManualFormError('Enter a valid amount greater than zero.');
+      return;
+    }
+    if (manualType === 'dues' && !manualPeriod) {
+      setManualFormError('Enter a dues period.');
+      return;
+    }
+    if (manualType === 'event' && !manualEventId && !manualEventTitle.trim()) {
+      setManualFormError('Select an event or enter a title for it.');
+      return;
+    }
+    const channel = manualChannel === 'other' ? manualChannelOther.trim() || 'other' : manualChannel;
+
+    setManualSubmitting(true);
+    try {
+      await createManualPayment({
+        type: manualType,
+        memberId: manualMemberId,
+        amount: amountNum,
+        currency: manualCurrency || undefined,
+        channel,
+        status: manualStatus,
+        period: manualType === 'dues' ? manualPeriod : undefined,
+        eventId: manualType === 'event' ? manualEventId || undefined : undefined,
+        eventTitle: manualType === 'event' ? manualEventTitle.trim() || undefined : undefined,
+      });
+      const refreshed = await fetchAllPaymentsAdmin();
+      setPayments(refreshed);
+      resetManualPaymentForm();
+      setShowManualPaymentForm(false);
+    } catch (err: any) {
+      setManualFormError(err.message || 'Failed to log payment.');
+    } finally {
+      setManualSubmitting(false);
+    }
+  };
+
+  const handleDeletePayment = async (p: AdminPaymentRecord) => {
+    if (!window.confirm(`Permanently delete this ${p.type} payment record for ${p.memberName} (${p.currency} ${p.amount.toFixed(2)})? This cannot be undone.`)) return;
+    try {
+      await deleteAdminPayment(p.type, p.id);
+      setPayments((prev) => prev.filter((x) => !(x.type === p.type && x.id === p.id)));
+    } catch (err: any) {
+      setPaymentsError(err.message || 'Failed to delete payment.');
+    }
   };
 
   // Load the selected member's payment history + hydrate the edit form
@@ -2433,14 +2543,199 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                     </div>
                   )}
 
-                  <div>
-                    <h4 className="font-display text-xs font-black text-luxury-gold uppercase tracking-widest mb-1">
-                      Payments ({filteredPayments.length}{filteredPayments.length !== payments.length ? ` of ${payments.length}` : ''})
-                    </h4>
-                    <p className="text-[10px] text-gray-500 font-sans">
-                      Every welfare dues and event payment across every member, newest first — for reconciling who paid what (including partial dues payments).
-                    </p>
+                  <div className="flex items-start justify-between gap-3 flex-wrap">
+                    <div>
+                      <h4 className="font-display text-xs font-black text-luxury-gold uppercase tracking-widest mb-1">
+                        Payments ({filteredPayments.length}{filteredPayments.length !== payments.length ? ` of ${payments.length}` : ''})
+                      </h4>
+                      <p className="text-[10px] text-gray-500 font-sans">
+                        Every welfare dues and event payment across every member, newest first — for reconciling who paid what (including partial dues payments).
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => {
+                        if (showManualPaymentForm) {
+                          setShowManualPaymentForm(false);
+                        } else {
+                          resetManualPaymentForm();
+                          setShowManualPaymentForm(true);
+                        }
+                      }}
+                      className="shrink-0 px-4 py-2 rounded bg-gradient-to-r from-luxury-gold to-luxury-gold-dark text-black font-sans font-black tracking-widest text-[10px] uppercase transition-all shadow-[0_2px_10px_rgba(212,175,55,0.2)] cursor-pointer flex items-center gap-1.5"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      {showManualPaymentForm ? 'Cancel' : 'Log Manual Payment'}
+                    </button>
                   </div>
+
+                  {/* Manual payment entry — for cash, bank transfer, or any
+                      payment collected outside Paystack */}
+                  {showManualPaymentForm && (
+                    <form onSubmit={handleCreateManualPayment} className="bg-charcoal-card rounded-lg border border-luxury-gold/20 p-5 space-y-4">
+                      <h5 className="font-display text-xs font-black text-white uppercase tracking-widest">
+                        Log Manual Payment
+                      </h5>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div>
+                          <label className="font-sans text-[9px] font-black uppercase tracking-widest text-gray-500 block mb-1">Member</label>
+                          <select
+                            value={manualMemberId}
+                            onChange={(e) => handleManualMemberChange(e.target.value)}
+                            className="w-full bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold cursor-pointer"
+                          >
+                            <option value="">Select a member...</option>
+                            {memberAccounts.map((m) => (
+                              <option key={m.id} value={m.id}>{m.fullName} ({m.email})</option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="font-sans text-[9px] font-black uppercase tracking-widest text-gray-500 block mb-1">Type</label>
+                          <select
+                            value={manualType}
+                            onChange={(e) => setManualType(e.target.value as 'dues' | 'event')}
+                            className="w-full bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold cursor-pointer"
+                          >
+                            <option value="dues">Welfare Dues</option>
+                            <option value="event">Event Registration</option>
+                          </select>
+                        </div>
+
+                        {manualType === 'dues' ? (
+                          <div>
+                            <label className="font-sans text-[9px] font-black uppercase tracking-widest text-gray-500 block mb-1">Period</label>
+                            <input
+                              type="month"
+                              value={manualPeriod}
+                              onChange={(e) => setManualPeriod(e.target.value)}
+                              className="w-full bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold"
+                            />
+                          </div>
+                        ) : (
+                          <div className="md:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <div>
+                              <label className="font-sans text-[9px] font-black uppercase tracking-widest text-gray-500 block mb-1">Event</label>
+                              <select
+                                value={manualEventId}
+                                onChange={(e) => handleManualEventChange(e.target.value)}
+                                className="w-full bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold cursor-pointer"
+                              >
+                                <option value="">— Custom / past event (type title) —</option>
+                                {events.map((ev) => (
+                                  <option key={ev.id} value={ev.id}>{ev.title}</option>
+                                ))}
+                              </select>
+                            </div>
+                            {!manualEventId && (
+                              <div>
+                                <label className="font-sans text-[9px] font-black uppercase tracking-widest text-gray-500 block mb-1">Event Title</label>
+                                <input
+                                  type="text"
+                                  placeholder="e.g. Founders Gala 2025"
+                                  value={manualEventTitle}
+                                  onChange={(e) => setManualEventTitle(e.target.value)}
+                                  className="w-full bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold"
+                                />
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        <div>
+                          <label className="font-sans text-[9px] font-black uppercase tracking-widest text-gray-500 block mb-1">Amount</label>
+                          <input
+                            type="number"
+                            min={0.01}
+                            step="0.01"
+                            placeholder="0.00"
+                            value={manualAmount}
+                            onChange={(e) => setManualAmount(e.target.value)}
+                            className="w-full bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="font-sans text-[9px] font-black uppercase tracking-widest text-gray-500 block mb-1">Currency</label>
+                          <input
+                            type="text"
+                            placeholder="GHS"
+                            value={manualCurrency}
+                            onChange={(e) => setManualCurrency(e.target.value)}
+                            className="w-full bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="font-sans text-[9px] font-black uppercase tracking-widest text-gray-500 block mb-1">Channel</label>
+                          <select
+                            value={manualChannel}
+                            onChange={(e) => setManualChannel(e.target.value)}
+                            className="w-full bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold cursor-pointer"
+                          >
+                            <option value="cash">Cash</option>
+                            <option value="bank_transfer">Bank Transfer</option>
+                            <option value="cheque">Cheque</option>
+                            <option value="mobile_money">Mobile Money</option>
+                            <option value="card">Card</option>
+                            <option value="other">Other...</option>
+                          </select>
+                        </div>
+
+                        {manualChannel === 'other' && (
+                          <div>
+                            <label className="font-sans text-[9px] font-black uppercase tracking-widest text-gray-500 block mb-1">Specify Channel</label>
+                            <input
+                              type="text"
+                              placeholder="e.g. money order"
+                              value={manualChannelOther}
+                              onChange={(e) => setManualChannelOther(e.target.value)}
+                              className="w-full bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold"
+                            />
+                          </div>
+                        )}
+
+                        <div>
+                          <label className="font-sans text-[9px] font-black uppercase tracking-widest text-gray-500 block mb-1">Status</label>
+                          <select
+                            value={manualStatus}
+                            onChange={(e) => setManualStatus(e.target.value as 'pending' | 'success' | 'failed')}
+                            className="w-full bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold cursor-pointer"
+                          >
+                            <option value="success">Success (already collected)</option>
+                            <option value="pending">Pending</option>
+                            <option value="failed">Failed</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      {manualFormError && (
+                        <div className="flex items-center gap-2 text-xs text-red-500 bg-red-500/10 border border-red-500/20 p-3 rounded">
+                          <AlertCircle className="w-4 h-4 shrink-0" />
+                          <span>{manualFormError}</span>
+                        </div>
+                      )}
+
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="submit"
+                          disabled={manualSubmitting}
+                          className="px-5 py-2.5 bg-gradient-to-r from-luxury-gold to-luxury-gold-dark text-black font-sans font-black tracking-widest text-[10px] uppercase rounded transition-all shadow-[0_2px_10px_rgba(212,175,55,0.2)] disabled:opacity-50 flex items-center gap-2 cursor-pointer"
+                        >
+                          {manualSubmitting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                          Save Payment
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setShowManualPaymentForm(false)}
+                          className="px-4 py-2.5 rounded border border-gray-800 text-gray-400 hover:text-white font-sans font-black tracking-widest text-[10px] uppercase transition-colors cursor-pointer"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </form>
+                  )}
 
                   {/* Filters + export */}
                   <div className="bg-charcoal-card rounded-lg border border-gray-900 p-4 flex flex-wrap items-end gap-3">
@@ -2525,6 +2820,7 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                             <th className="px-4 py-3">Channel</th>
                             <th className="px-4 py-3 text-right">Amount</th>
                             <th className="px-4 py-3 text-right">Status</th>
+                            <th className="px-4 py-3 text-right">Actions</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -2555,6 +2851,16 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                                 <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded border ${statusBadgeClass(p.status)}`}>
                                   {p.status}
                                 </span>
+                              </td>
+                              <td className="px-4 py-3 text-right">
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeletePayment(p)}
+                                  className="inline-flex items-center justify-center p-1.5 rounded border border-gray-800 text-gray-500 hover:text-red-400 hover:border-red-900/60 hover:bg-red-950/20 transition-colors"
+                                  title="Delete payment"
+                                >
+                                  <Trash2 size={12} />
+                                </button>
                               </td>
                             </tr>
                           ))}
