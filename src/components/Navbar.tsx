@@ -100,10 +100,13 @@ export default function Navbar({ onOpenJoin, onOpenWelfare }: NavbarProps) {
         <div className="hidden md:flex items-center gap-3">
           <button
             onClick={openPortal}
-            className="p-2.5 rounded bg-charcoal-card border border-gray-800 text-gray-400 hover:text-luxury-gold hover:border-luxury-gold/50 transition-all cursor-pointer flex items-center justify-center hover:scale-105"
+            className="pl-3 pr-4 py-2.5 rounded bg-charcoal-card border border-gray-800 text-gray-300 hover:text-luxury-gold hover:border-luxury-gold/50 transition-all cursor-pointer flex items-center gap-1.5 hover:scale-105"
             title={member ? `My Portal (${member.fullName})` : 'Member Login'}
           >
-            {member ? <UserCircle2 className="w-4 h-4" /> : <LogIn className="w-4 h-4" />}
+            {member ? <UserCircle2 className="w-4 h-4 shrink-0" /> : <LogIn className="w-4 h-4 shrink-0" />}
+            <span className="hidden lg:inline font-sans text-[10px] font-black uppercase tracking-widest whitespace-nowrap">
+              {member ? 'My Portal' : 'Member Login'}
+            </span>
           </button>
 
           <button
