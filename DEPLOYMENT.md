@@ -204,6 +204,38 @@ Member portal accounts themselves are created by an admin from the CMS
 (**Staff Login** link in the site footer → **Member Accounts** tab) — there's
 no public self-registration.
 
+### Welcome emails (username + temporary password)
+
+When an admin creates a member account (or resets a member's password) from
+**Member Accounts**, the app automatically emails that member their username,
+temporary password, and a "Log In To Your Portal" link with instructions —
+so the admin doesn't have to relay credentials by hand.
+
+This needs SMTP credentials added to the same `.env` file as above:
+
+```
+SITE_URL=https://de-elitesfamily.org
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587
+SMTP_USER=apikey-or-username
+SMTP_PASS=replace-with-real-smtp-password
+SMTP_FROM="DE ELITES FAMILY <no-reply@de-elitesfamily.org>"
+```
+
+Any provider that gives you SMTP credentials works — Zoho Mail, Google
+Workspace, SendGrid, Mailgun, Amazon SES, etc. See `.env.example` for what
+each variable does.
+
+**Before you add SMTP credentials**, account creation and password resets
+still work — the app runs in the same kind of **mock mode** as Paystack
+above: instead of sending a real email, it logs the username and temporary
+password to the server console, and the CMS tells the admin the email was
+only simulated so they know to share the credentials with the member
+directly for now. The moment real `SMTP_*` values are added and the service
+is restarted, it switches to sending real emails automatically. Force either
+behavior with `MAIL_MOCK=true` / `MAIL_MOCK=false` if needed — see
+`.env.example`.
+
 ### Mobile Money
 
 Both "Pay Dues" and "Pay & Register" checkouts offer **Mobile Money**

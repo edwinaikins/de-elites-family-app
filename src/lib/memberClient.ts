@@ -175,25 +175,38 @@ export async function fetchAllMemberAccounts(): Promise<MemberAccount[]> {
   return handleJson(res);
 }
 
+// The server also attempts to email the new member their username +
+// temporary password + login instructions — emailSent/mailMock report
+// whether that actually went out (mailMock === true means it was only
+// logged server-side, e.g. no SMTP configured yet) so the caller can tell
+// the admin whether they need to share the credentials some other way.
 export async function createMemberAccount(payload: {
   fullName: string;
   username: string;
   email: string;
   password: string;
+  phone?: string;
   duesAmount?: number;
   executiveDuesAmount?: number;
   currency?: string;
   chapter?: string;
   role?: string;
-}): Promise<MemberAccount> {
+}): Promise<{ member: MemberAccount; emailSent: boolean; mailMock: boolean }> {
   const res = await fetch('/api/admin/members', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
-  return handleJson(res);
+  const result = await res.json().catch(() => ({}));
+  if (!res.ok || !result.success) {
+    throw new Error(result.error || 'Failed to create member account');
+  }
+  return { member: result.data as MemberAccount, emailSent: !!result.emailSent, mailMock: !!result.mailMock };
 }
 
+// emailSent is only meaningful when `update.resetPassword` was set — that's
+// the only case where the server attempts to send an email (a new temporary
+// password the member needs to know about). It's `undefined` otherwise.
 export async function updateMemberAccount(
   id: string,
   update: Partial<{
@@ -201,19 +214,24 @@ export async function updateMemberAccount(
     username: string;
     chapter: string;
     role: string;
+    phone: string;
     duesAmount: number;
     executiveDuesAmount: number;
     currency: string;
     status: string;
     resetPassword: string;
   }>
-): Promise<MemberAccount> {
+): Promise<{ member: MemberAccount; emailSent?: boolean; mailMock: boolean }> {
   const res = await fetch(`/api/admin/members/${encodeURIComponent(id)}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(update),
   });
-  return handleJson(res);
+  const result = await res.json().catch(() => ({}));
+  if (!res.ok || !result.success) {
+    throw new Error(result.error || 'Failed to update member account');
+  }
+  return { member: result.data as MemberAccount, emailSent: result.emailSent, mailMock: !!result.mailMock };
 }
 
 export async function deleteMemberAccount(id: string): Promise<void> {

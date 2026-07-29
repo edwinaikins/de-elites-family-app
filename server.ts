@@ -8,6 +8,7 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import crypto from "crypto";
 import multer from "multer";
+import nodemailer from "nodemailer";
 import { PILLARS, LEADERSHIP, GALLERY_ITEMS, DEFAULT_SHOUTOUTS, DEFAULT_MEMBERS, DEFAULT_EVENTS, DEFAULT_HERO } from "./src/data";
 
 const { Pool } = pg;
@@ -135,6 +136,95 @@ const MOCK_REFERENCE_PREFIX = "mock-";
 
 function getDuesCurrency(): string {
   return process.env.DUES_CURRENCY || "GHS";
+}
+
+// --- Transactional email (welcome emails, admin password resets) ---
+//
+// Same "mock unless configured" posture as Paystack above: with no SMTP
+// credentials set, an email is simply logged to the server console instead
+// of failing outright, so account creation still works end-to-end while
+// testing. The moment SMTP_HOST/SMTP_USER/SMTP_PASS are set, real emails
+// start sending automatically — no flag to remember to flip (MAIL_MOCK can
+// still force either behavior, same as PAYSTACK_MOCK).
+function getSiteUrl(): string {
+  return (process.env.SITE_URL || "https://de-elitesfamily.org").replace(/\/+$/, "");
+}
+
+function getMailFrom(): string {
+  return process.env.SMTP_FROM || "DE ELITES FAMILY <no-reply@de-elitesfamily.org>";
+}
+
+function isMockMailEnabled(): boolean {
+  const flag = process.env.MAIL_MOCK;
+  if (flag === "true") return true;
+  if (flag === "false") return false;
+  return !process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASS;
+}
+
+let cachedMailTransporter: any = null;
+function getMailTransporter(): any {
+  if (cachedMailTransporter) return cachedMailTransporter;
+  const port = Number(process.env.SMTP_PORT) || 587;
+  cachedMailTransporter = nodemailer.createTransport({
+    host: process.env.SMTP_HOST,
+    port,
+    secure: port === 465,
+    auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
+  });
+  return cachedMailTransporter;
+}
+
+// Returns true once the email has been sent (or, in mock mode, logged) —
+// false only on an actual send failure, so callers can tell the admin to
+// share the credentials with the member directly if that happens.
+async function sendMail(to: string, subject: string, text: string, html: string): Promise<boolean> {
+  if (isMockMailEnabled()) {
+    console.log(`\n[MOCK EMAIL] To: ${to}\nSubject: ${subject}\n\n${text}\n`);
+    return true;
+  }
+  try {
+    await getMailTransporter().sendMail({ from: getMailFrom(), to, subject, text, html });
+    return true;
+  } catch (err) {
+    console.error(`Failed to send email to ${to}:`, err);
+    return false;
+  }
+}
+
+function loginInstructionsHtml(fullName: string, username: string, tempPassword: string, heading: string): string {
+  const url = getSiteUrl();
+  return `
+    <div style="font-family: sans-serif; color: #111; max-width: 480px; margin: 0 auto;">
+      <h2 style="color:#b8860b;">${heading}</h2>
+      <p>Hi ${fullName},</p>
+      <p>Here are your DE ELITES FAMILY member portal login details:</p>
+      <table style="margin: 16px 0; border-collapse: collapse;">
+        <tr><td style="padding:4px 12px 4px 0; color:#555;">Username</td><td style="padding:4px 0; font-weight:bold;">${username}</td></tr>
+        <tr><td style="padding:4px 12px 4px 0; color:#555;">Temporary Password</td><td style="padding:4px 0; font-weight:bold;">${tempPassword}</td></tr>
+      </table>
+      <p>
+        <a href="${url}" style="display:inline-block; background:#b8860b; color:#fff; padding:10px 20px; border-radius:4px; text-decoration:none; font-weight:bold;">
+          Log In To Your Portal
+        </a>
+      </p>
+      <p>Open the site above, click "Member Login", and sign in with the username and temporary password shown. You'll be asked to set your own password right after you log in.</p>
+      <p style="color:#888; font-size:12px; margin-top:24px;">If you weren't expecting this email, you can ignore it.</p>
+    </div>
+  `;
+}
+
+async function sendWelcomeEmail(fullName: string, email: string, username: string, tempPassword: string): Promise<boolean> {
+  const url = getSiteUrl();
+  const text = `Hi ${fullName},\n\nYour DE ELITES FAMILY member portal account is ready.\n\nUsername: ${username}\nTemporary Password: ${tempPassword}\n\nLog in at ${url} (click "Member Login") using the details above. You'll be asked to set your own password right after you log in.\n\nIf you weren't expecting this email, you can ignore it.`;
+  const html = loginInstructionsHtml(fullName, username, tempPassword, "Welcome to DE ELITES FAMILY");
+  return sendMail(email, "Welcome to DE ELITES FAMILY — Your Portal Login", text, html);
+}
+
+async function sendPasswordResetEmail(fullName: string, email: string, username: string, tempPassword: string): Promise<boolean> {
+  const url = getSiteUrl();
+  const text = `Hi ${fullName},\n\nAn admin has reset your DE ELITES FAMILY member portal password.\n\nUsername: ${username}\nNew Temporary Password: ${tempPassword}\n\nLog in at ${url} (click "Member Login") using the details above. You'll be asked to set your own password right after you log in.\n\nIf you weren't expecting this, contact an admin.`;
+  const html = loginInstructionsHtml(fullName, username, tempPassword, "Your DE ELITES FAMILY Password Was Reset");
+  return sendMail(email, "Your DE ELITES FAMILY Password Was Reset", text, html);
 }
 
 // Middleware: verifies the member's JWT (sent as `Authorization: Bearer <token>`)
@@ -1083,7 +1173,12 @@ app.post("/api/admin/members", async (req, res) => {
         b.currency || getDuesCurrency(),
       ]
     );
-    res.json({ success: true, data: mapMemberRow(result.rows[0]) });
+    const created = mapMemberRow(result.rows[0]);
+    // Best-effort — a failed/mocked email should never block account
+    // creation itself, just get surfaced to the admin so they know to share
+    // the credentials with the member some other way.
+    const emailSent = await sendWelcomeEmail(created.fullName, created.email, created.username, String(b.password));
+    res.json({ success: true, data: created, emailSent, mailMock: isMockMailEnabled() });
   } catch (error: any) {
     console.error("Failed to create member account:", error);
     res.status(500).json({ success: false, error: error.message || "Failed to create member account." });
@@ -1111,6 +1206,7 @@ app.patch("/api/admin/members/:id", async (req, res) => {
       await db.query("UPDATE member_accounts SET username = $2 WHERE id = $1", [id, username]);
     }
 
+    let passwordWasReset = false;
     if (b.resetPassword) {
       if (String(b.resetPassword).length < 8) {
         return res.status(400).json({ success: false, error: "New password must be at least 8 characters." });
@@ -1119,6 +1215,7 @@ app.patch("/api/admin/members/:id", async (req, res) => {
       // prompted to replace it with their own the next time they log in.
       const passwordHash = await bcrypt.hash(String(b.resetPassword), 10);
       await db.query("UPDATE member_accounts SET password_hash = $2, must_change_password = true WHERE id = $1", [id, passwordHash]);
+      passwordWasReset = true;
     }
 
     const result = await db.query(
@@ -1129,7 +1226,8 @@ app.patch("/api/admin/members/:id", async (req, res) => {
         dues_amount = COALESCE($5, dues_amount),
         currency = COALESCE($6, currency),
         status = COALESCE($7, status),
-        executive_dues_amount = COALESCE($8, executive_dues_amount)
+        executive_dues_amount = COALESCE($8, executive_dues_amount),
+        phone = COALESCE($9, phone)
        WHERE id = $1 RETURNING *`,
       [
         id,
@@ -1140,10 +1238,17 @@ app.patch("/api/admin/members/:id", async (req, res) => {
         typeof b.currency === "string" ? b.currency : null,
         typeof b.status === "string" ? b.status : null,
         b.executiveDuesAmount !== undefined ? Number(b.executiveDuesAmount) : null,
+        typeof b.phone === "string" ? b.phone : null,
       ]
     );
     if (result.rowCount === 0) return res.status(404).json({ success: false, error: "Member account not found." });
-    res.json({ success: true, data: mapMemberRow(result.rows[0]) });
+    const updated = mapMemberRow(result.rows[0]);
+
+    let emailSent: boolean | undefined;
+    if (passwordWasReset) {
+      emailSent = await sendPasswordResetEmail(updated.fullName, updated.email, updated.username, String(b.resetPassword));
+    }
+    res.json({ success: true, data: updated, emailSent, mailMock: isMockMailEnabled() });
   } catch (error: any) {
     console.error("Failed to update member account:", error);
     res.status(500).json({ success: false, error: error.message || "Failed to update member account." });
