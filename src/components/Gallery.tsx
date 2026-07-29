@@ -10,7 +10,11 @@ export default function Gallery() {
   const [selectedItem, setSelectedItem] = useState<GalleryItem | null>(null);
   const [activeMediaIndex, setActiveMediaIndex] = useState(0);
 
-  const categories = ['All', 'Legacy', 'Community', 'Philanthropy', 'Movement', 'Events'];
+  // Categories are admin-defined, not a fixed list — whatever category tags
+  // are actually in use across the gallery become filter buttons here, so a
+  // brand-new category (typed in the CMS's Legacy Gallery editor) shows up
+  // automatically without any code change.
+  const categories = ['All', ...Array.from(new Set(gallery.map((item) => item.category).filter(Boolean)))];
 
   // Note: this grid intentionally only shows the CMS's own curated Gallery
   // items — publishing an Upcoming Event does NOT automatically add it here.
@@ -252,7 +256,7 @@ export default function Gallery() {
                   </span>
                   <span className="text-gray-700 hidden sm:inline">•</span>
                   <span className="font-sans text-xs uppercase tracking-widest text-luxury-gold font-bold flex items-center gap-1">
-                    <Award className="w-3.5 h-3.5" /> {selectedItem.category === 'Events' ? 'Upcoming Event' : 'Approved Project'}
+                    <Award className="w-3.5 h-3.5" /> Approved Project
                   </span>
                 </div>
 
@@ -273,12 +277,10 @@ export default function Gallery() {
                   </div>
                   <div>
                     <h4 className="font-display text-xs font-black uppercase tracking-widest text-luxury-gold">
-                      {selectedItem.category === 'Events' ? 'Assembly Overview' : 'Movement Impact Summary'}
+                      Movement Impact Summary
                     </h4>
                     <p className="font-sans text-xs text-gray-400 mt-1 leading-relaxed">
-                      {selectedItem.category === 'Events'
-                        ? 'This is one of our upcoming sovereign assemblies. Head to the Upcoming Events section for full date, time, and location details.'
-                        : 'This project is a cornerstone of our community empowerment model. Fully supported by collective contributions, De Elites Family ensures direct allocation, transparent auditing, and sustainable execution for all local initiatives.'}
+                      This project is a cornerstone of our community empowerment model. Fully supported by collective contributions, De Elites Family ensures direct allocation, transparent auditing, and sustainable execution for all local initiatives.
                     </p>
                   </div>
                 </div>

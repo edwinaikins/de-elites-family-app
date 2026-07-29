@@ -1,4 +1,4 @@
-import { MemberAccount, MemberProfileUpdate, WelfareDuesPayment, EventPayment, PaymentInitResponse, DuesBalance, AdminPaymentRecord, ManualPaymentInput } from '../types';
+import { MemberAccount, MemberProfileUpdate, WelfareDuesPayment, EventPayment, MemberBill, EventRsvp, EventRsvpResponse, AdminEventRsvp, PaymentInitResponse, DuesBalance, AdminPaymentRecord, ManualPaymentInput } from '../types';
 
 async function handleJson<T>(res: Response): Promise<T> {
   const result = await res.json().catch(() => ({}));
@@ -84,11 +84,78 @@ export async function initializeEventPayment(token: string, eventId: string): Pr
   return handleJson(res);
 }
 
+// --- Executive Dues ---
+// A second, separate recurring dues stream billed on top of regular welfare
+// dues — only members with executiveDuesAmount > 0 owe anything. Same
+// balance/history/pay shape as regular dues above, just its own endpoints.
+
+export async function fetchMyExecutiveDuesHistory(token: string): Promise<WelfareDuesPayment[]> {
+  const res = await fetch('/api/member/executive-dues-history', { headers: authHeaders(token) });
+  return handleJson(res);
+}
+
+export async function fetchMyExecutiveDuesBalance(token: string, period: string): Promise<DuesBalance> {
+  const res = await fetch(`/api/member/executive-dues-balance/${encodeURIComponent(period)}`, { headers: authHeaders(token) });
+  return handleJson(res);
+}
+
+export async function initializeExecutiveDuesPayment(token: string, period: string, amount?: number): Promise<PaymentInitResponse> {
+  const res = await fetch('/api/payments/executive-dues/initialize', {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify({ period, amount }),
+  });
+  return handleJson(res);
+}
+
+// --- One-off bills ---
+// A single non-recurring charge an admin created for this member (see
+// createBill below) — separate from any recurring dues cycle.
+
+export async function fetchMyBills(token: string): Promise<MemberBill[]> {
+  const res = await fetch('/api/member/bills', { headers: authHeaders(token) });
+  return handleJson(res);
+}
+
+export async function initializeBillPayment(token: string, billId: string): Promise<PaymentInitResponse> {
+  const res = await fetch('/api/payments/bill/initialize', {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify({ billId }),
+  });
+  return handleJson(res);
+}
+
+// --- Event RSVPs (free events only) ---
+
+export async function fetchMyRsvps(token: string): Promise<EventRsvp[]> {
+  const res = await fetch('/api/member/rsvps', { headers: authHeaders(token) });
+  return handleJson(res);
+}
+
+export async function submitRsvp(token: string, eventId: string, response: EventRsvpResponse): Promise<EventRsvp> {
+  const res = await fetch(`/api/events/${encodeURIComponent(eventId)}/rsvp`, {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify({ response }),
+  });
+  return handleJson(res);
+}
+
+export async function fetchEventRsvpsAdmin(eventId: string): Promise<AdminEventRsvp[]> {
+  const res = await fetch(`/api/admin/events/${encodeURIComponent(eventId)}/rsvps`);
+  return handleJson(res);
+}
+
 // `channel` (e.g. "card" / "mobile_money") is only ever honored by the
 // server for mock payments — for real payments the channel always comes
 // from Paystack's own verify response, so passing it here for a real
 // payment is simply ignored server-side.
-export async function verifyPayment(token: string, reference: string, channel?: string): Promise<{ type: 'dues' | 'event' }> {
+export async function verifyPayment(
+  token: string,
+  reference: string,
+  channel?: string
+): Promise<{ type: 'dues' | 'event' | 'executive-dues' | 'bill' }> {
   const res = await fetch('/api/payments/verify', {
     method: 'POST',
     headers: authHeaders(token),
@@ -114,6 +181,7 @@ export async function createMemberAccount(payload: {
   email: string;
   password: string;
   duesAmount?: number;
+  executiveDuesAmount?: number;
   currency?: string;
   chapter?: string;
   role?: string;
@@ -128,7 +196,17 @@ export async function createMemberAccount(payload: {
 
 export async function updateMemberAccount(
   id: string,
-  update: Partial<{ fullName: string; username: string; chapter: string; role: string; duesAmount: number; currency: string; status: string; resetPassword: string }>
+  update: Partial<{
+    fullName: string;
+    username: string;
+    chapter: string;
+    role: string;
+    duesAmount: number;
+    executiveDuesAmount: number;
+    currency: string;
+    status: string;
+    resetPassword: string;
+  }>
 ): Promise<MemberAccount> {
   const res = await fetch(`/api/admin/members/${encodeURIComponent(id)}`, {
     method: 'PATCH',
@@ -153,6 +231,16 @@ export async function fetchMemberEventPaymentsAdmin(id: string): Promise<EventPa
   return handleJson(res);
 }
 
+export async function fetchMemberExecutiveDuesHistoryAdmin(id: string): Promise<WelfareDuesPayment[]> {
+  const res = await fetch(`/api/admin/members/${encodeURIComponent(id)}/executive-dues`);
+  return handleJson(res);
+}
+
+export async function fetchMemberBillsAdmin(id: string): Promise<MemberBill[]> {
+  const res = await fetch(`/api/admin/members/${encodeURIComponent(id)}/bills`);
+  return handleJson(res);
+}
+
 // --- Admin: reconciliation ---
 
 export async function fetchAllPaymentsAdmin(): Promise<AdminPaymentRecord[]> {
@@ -169,7 +257,44 @@ export async function createManualPayment(input: ManualPaymentInput): Promise<Ad
   return handleJson(res);
 }
 
-export async function deleteAdminPayment(type: 'dues' | 'event', id: string): Promise<void> {
+export async function deleteAdminPayment(type: 'dues' | 'event' | 'executive-dues' | 'bill', id: string): Promise<void> {
   const res = await fetch(`/api/admin/payments/${type}/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  await handleJson(res);
+}
+
+// --- Admin: one-off bills ---
+// Separate from the manual-payment-log mechanism above (which only ever
+// records something that's already been paid) — a bill starts out UNPAID,
+// admin-created, and the member pays it themselves from their portal (or an
+// admin marks it paid manually later via updateBill's markPaidChannel).
+
+export async function createBill(input: {
+  memberIds: string[];
+  label: string;
+  amount: number;
+  currency?: string;
+}): Promise<MemberBill[]> {
+  const res = await fetch('/api/admin/bills', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  return handleJson(res);
+}
+
+export async function updateBill(
+  id: string,
+  update: Partial<{ label: string; amount: number; markPaidChannel: string }>
+): Promise<MemberBill> {
+  const res = await fetch(`/api/admin/bills/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(update),
+  });
+  return handleJson(res);
+}
+
+export async function deleteBill(id: string): Promise<void> {
+  const res = await fetch(`/api/admin/bills/${encodeURIComponent(id)}`, { method: 'DELETE' });
   await handleJson(res);
 }

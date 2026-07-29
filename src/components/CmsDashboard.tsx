@@ -4,18 +4,21 @@ import {
   Settings, Save, Plus, Trash2, Shield, Crown,
   RefreshCw, Heart, ShieldCheck, Users, Flame,
   Award, Compass, Image, Calendar, Film,
-  X, Check, RotateCcw, AlertCircle, LogOut,
+  X, Check, AlertCircle, LogOut,
   UserCheck, Loader2, Mail, Phone, Wallet, Ticket, UserPlus, Download
 } from 'lucide-react';
 import { useCms } from '../context/CmsContext';
 import { ImageUpload } from './ImageUpload';
 import { BulkMediaUpload } from './BulkMediaUpload';
-import { Pillar, Leader, GalleryItem, EliteEvent, MediaItem, HeroConfig, CmsUser, MemberApplication, MemberAccount, WelfareDuesPayment, EventPayment, AdminPaymentRecord } from '../types';
+import { Pillar, Leader, GalleryItem, EliteEvent, MediaItem, HeroConfig, CmsUser, MemberApplication, MemberAccount, WelfareDuesPayment, EventPayment, MemberBill, AdminEventRsvp, AdminPaymentRecord, ManualPaymentInput } from '../types';
 import { fetchMemberApplications, updateMemberApplicationStatus, deleteMemberApplication, UploadedMediaItem } from '../lib/cmsClient';
 import {
   fetchAllMemberAccounts, createMemberAccount, updateMemberAccount, deleteMemberAccount,
   fetchMemberDuesHistoryAdmin, fetchMemberEventPaymentsAdmin, fetchAllPaymentsAdmin,
+  fetchMemberExecutiveDuesHistoryAdmin, fetchMemberBillsAdmin,
   createManualPayment, deleteAdminPayment,
+  createBill, updateBill, deleteBill,
+  fetchEventRsvpsAdmin,
 } from '../lib/memberClient';
 
 interface CmsDashboardProps {
@@ -53,13 +56,17 @@ function formatChannel(channel?: string): string {
 export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
   const {
     pillars, leaders, gallery, events, hero, users,
-    updateSection, resetToDefaults, loading, error
+    updateSection, saveItem, deleteItem, loading, error
   } = useCms();
 
   const [activeTab, setActiveTab] = useState<TabType>('pillars');
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
   const [saveLoading, setSaveLoading] = useState(false);
+  // id of whichever single Leader/GalleryItem/EliteEvent card is currently
+  // being saved via its own Save button — lets that one card show a spinner
+  // without disabling the rest of the tab.
+  const [itemActionId, setItemActionId] = useState<string | null>(null);
 
   // Local editable copies of states
   const [localPillars, setLocalPillars] = useState<Pillar[]>([]);
@@ -82,6 +89,8 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
   const [memberAccountsError, setMemberAccountsError] = useState<string | null>(null);
   const [selectedMemberDues, setSelectedMemberDues] = useState<WelfareDuesPayment[]>([]);
   const [selectedMemberEventPayments, setSelectedMemberEventPayments] = useState<EventPayment[]>([]);
+  const [selectedMemberExecutiveDues, setSelectedMemberExecutiveDues] = useState<WelfareDuesPayment[]>([]);
+  const [selectedMemberBills, setSelectedMemberBills] = useState<MemberBill[]>([]);
   const [selectedMemberHistoryLoading, setSelectedMemberHistoryLoading] = useState(false);
 
   // New member account creation form
@@ -90,11 +99,16 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
   const [newMemberEmail, setNewMemberEmail] = useState('');
   const [newMemberPassword, setNewMemberPassword] = useState('');
   const [newMemberDues, setNewMemberDues] = useState('');
+  // Leave blank for a regular member (executiveDuesAmount 0) — set a number
+  // to also flag this member as an executive and bill them this extra
+  // amount every period, on top of newMemberDues.
+  const [newMemberExecutiveDues, setNewMemberExecutiveDues] = useState('');
   const [newMemberChapter, setNewMemberChapter] = useState('');
   const [newMemberRole, setNewMemberRole] = useState('');
 
   // Draft edits for the currently selected member account (dues amount etc.)
   const [memberEditDues, setMemberEditDues] = useState('');
+  const [memberEditExecutiveDues, setMemberEditExecutiveDues] = useState('');
   const [memberEditStatus, setMemberEditStatus] = useState<'active' | 'suspended'>('active');
   // Members log in with this, not their email (see /api/member/login) — pre-
   // migration accounts may have this blank until an admin assigns one here.
@@ -109,13 +123,13 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
   const [paymentsLoading, setPaymentsLoading] = useState(false);
   const [paymentsError, setPaymentsError] = useState<string | null>(null);
   const [paymentsSearch, setPaymentsSearch] = useState('');
-  const [paymentsTypeFilter, setPaymentsTypeFilter] = useState<'all' | 'dues' | 'event'>('all');
+  const [paymentsTypeFilter, setPaymentsTypeFilter] = useState<'all' | 'dues' | 'event' | 'executive-dues' | 'bill'>('all');
   const [paymentsStatusFilter, setPaymentsStatusFilter] = useState<'all' | 'success' | 'pending' | 'failed'>('all');
 
   // "Log Manual Payment" form — for cash, bank transfer, or any payment
   // collected outside Paystack, so it still shows up in reconciliation.
   const [showManualPaymentForm, setShowManualPaymentForm] = useState(false);
-  const [manualType, setManualType] = useState<'dues' | 'event'>('dues');
+  const [manualType, setManualType] = useState<'dues' | 'event' | 'executive-dues'>('dues');
   const [manualMemberId, setManualMemberId] = useState('');
   const [manualPeriod, setManualPeriod] = useState(currentPeriod());
   const [manualEventId, setManualEventId] = useState('');
@@ -127,6 +141,17 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
   const [manualStatus, setManualStatus] = useState<'pending' | 'success' | 'failed'>('success');
   const [manualSubmitting, setManualSubmitting] = useState(false);
   const [manualFormError, setManualFormError] = useState('');
+
+  // "Create One-off Bill" form — a non-recurring charge, unpaid until the
+  // member(s) pay it themselves from their portal. Recipients is a set of
+  // member ids so one submit can bill a single person or a whole group.
+  const [showBillForm, setShowBillForm] = useState(false);
+  const [billLabel, setBillLabel] = useState('');
+  const [billAmount, setBillAmount] = useState('');
+  const [billCurrency, setBillCurrency] = useState('');
+  const [billRecipientIds, setBillRecipientIds] = useState<Set<string>>(new Set());
+  const [billSubmitting, setBillSubmitting] = useState(false);
+  const [billFormError, setBillFormError] = useState('');
 
   // Track currently active item for editing or "new" state
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
@@ -143,7 +168,16 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
   const [newPassword, setNewPassword] = useState('');
   const [newUserRole, setNewUserRole] = useState<'admin' | 'moderator'>('moderator');
 
-  // Initialize local copies when modal is opened or tab is switched
+  // Initialize local copies when the modal opens. Deliberately keyed ONLY on
+  // `isOpen` (not on pillars/leaders/gallery/events/hero/users too, like this
+  // used to be) — once per-item Save buttons landed on the Leadership/Gallery/
+  // Events tabs, saving or deleting one card updates the CmsContext arrays
+  // immediately, and re-running this on every such change would blow away
+  // whatever unsaved edit an admin has mid-typed into a *different* card's
+  // form. Local state now only ever gets reseeded when the panel is freshly
+  // opened; by then CmsProvider's initial fetch has long since resolved (the
+  // whole public site is gated behind it — see App.tsx), so there's no stale
+  // data to worry about missing.
   React.useEffect(() => {
     if (isOpen) {
       setLocalPillars([...pillars]);
@@ -157,7 +191,8 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
       setLocalError(null);
       setSuccessMsg(null);
     }
-  }, [isOpen, pillars, leaders, gallery, events, hero, users]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen]);
 
   React.useEffect(() => {
     setSelectedItemId(null);
@@ -303,7 +338,7 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
       setManualFormError('Enter a valid amount greater than zero.');
       return;
     }
-    if (manualType === 'dues' && !manualPeriod) {
+    if ((manualType === 'dues' || manualType === 'executive-dues') && !manualPeriod) {
       setManualFormError('Enter a dues period.');
       return;
     }
@@ -322,7 +357,7 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
         currency: manualCurrency || undefined,
         channel,
         status: manualStatus,
-        period: manualType === 'dues' ? manualPeriod : undefined,
+        period: (manualType === 'dues' || manualType === 'executive-dues') ? manualPeriod : undefined,
         eventId: manualType === 'event' ? manualEventId || undefined : undefined,
         eventTitle: manualType === 'event' ? manualEventTitle.trim() || undefined : undefined,
       });
@@ -353,14 +388,22 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
     const selected = memberAccounts.find((m) => m.id === selectedItemId);
     if (!selected) return;
     setMemberEditDues(String(selected.duesAmount ?? 0));
+    setMemberEditExecutiveDues(String(selected.executiveDuesAmount ?? 0));
     setMemberEditStatus(selected.status);
     setMemberEditUsername(selected.username || '');
     setMemberResetPassword('');
     setSelectedMemberHistoryLoading(true);
-    Promise.all([fetchMemberDuesHistoryAdmin(selected.id), fetchMemberEventPaymentsAdmin(selected.id)])
-      .then(([dues, eventPayments]) => {
+    Promise.all([
+      fetchMemberDuesHistoryAdmin(selected.id),
+      fetchMemberEventPaymentsAdmin(selected.id),
+      fetchMemberExecutiveDuesHistoryAdmin(selected.id),
+      fetchMemberBillsAdmin(selected.id),
+    ])
+      .then(([dues, eventPayments, executiveDues, bills]) => {
         setSelectedMemberDues(dues);
         setSelectedMemberEventPayments(eventPayments);
+        setSelectedMemberExecutiveDues(executiveDues);
+        setSelectedMemberBills(bills);
       })
       .catch(() => {})
       .finally(() => setSelectedMemberHistoryLoading(false));
@@ -396,29 +439,6 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
       setLocalError(err.message || `Failed to save ${tab} changes`);
     } finally {
       setSaveLoading(false);
-    }
-  };
-
-  const handleResetToDefaults = async () => {
-    if (window.confirm("WARNING: This will overwrite your CMS server database with the application's default factory data. This cannot be undone. Proceed?")) {
-      setSaveLoading(true);
-      try {
-        await resetToDefaults();
-        // Update local arrays
-        setLocalPillars([...pillars]);
-        setLocalLeaders([...leaders]);
-        setLocalGallery([...gallery]);
-        setLocalEvents([...events]);
-        setLocalHero([...hero]);
-        setLocalUsers([...users]);
-        setSelectedItemId(null);
-        setIsAddingNew(false);
-        triggerNotification("Database reset to defaults successfully!");
-      } catch (err: any) {
-        setLocalError(err.message || "Failed to reset database");
-      } finally {
-        setSaveLoading(false);
-      }
     }
   };
 
@@ -464,10 +484,34 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
     setIsAddingNew(true);
   };
 
-  const handleDeleteLeader = (id: string) => {
-    if (window.confirm("Are you sure you want to delete this leader profile?")) {
+  const handleSaveLeaderItem = async (id: string) => {
+    const leader = localLeaders.find(l => l.id === id);
+    if (!leader) return;
+    setItemActionId(id);
+    setLocalError(null);
+    try {
+      await saveItem('leaders', leader);
+      triggerNotification(`Saved "${leader.name}".`);
+    } catch (err: any) {
+      setLocalError(err.message || 'Failed to save leader');
+    } finally {
+      setItemActionId(null);
+    }
+  };
+
+  const handleDeleteLeader = async (id: string) => {
+    if (!window.confirm("Are you sure you want to delete this leader profile? This deletes it immediately — there's no separate save step.")) return;
+    setItemActionId(id);
+    setLocalError(null);
+    try {
+      await deleteItem('leaders', id);
       setLocalLeaders(prev => prev.filter(l => l.id !== id));
       if (selectedItemId === id) setSelectedItemId(null);
+      triggerNotification('Leader deleted.');
+    } catch (err: any) {
+      setLocalError(err.message || 'Failed to delete leader');
+    } finally {
+      setItemActionId(null);
     }
   };
 
@@ -490,18 +534,42 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
     setIsAddingNew(true);
   };
 
-  const handleDeleteGalleryItem = (id: string) => {
-    if (window.confirm("Are you sure you want to delete this gallery item?")) {
+  const handleSaveGalleryItem = async (id: string) => {
+    const item = localGallery.find(g => g.id === id);
+    if (!item) return;
+    setItemActionId(id);
+    setLocalError(null);
+    try {
+      await saveItem('gallery', item);
+      triggerNotification(`Saved "${item.title}".`);
+    } catch (err: any) {
+      setLocalError(err.message || 'Failed to save gallery item');
+    } finally {
+      setItemActionId(null);
+    }
+  };
+
+  const handleDeleteGalleryItem = async (id: string) => {
+    if (!window.confirm("Are you sure you want to delete this gallery item? This deletes it immediately — there's no separate save step.")) return;
+    setItemActionId(id);
+    setLocalError(null);
+    try {
+      await deleteItem('gallery', id);
       setLocalGallery(prev => prev.filter(g => g.id !== id));
       if (selectedItemId === id) setSelectedItemId(null);
+      triggerNotification('Gallery item deleted.');
+    } catch (err: any) {
+      setLocalError(err.message || 'Failed to delete gallery item');
+    } finally {
+      setItemActionId(null);
     }
   };
 
   // Turns a batch of just-uploaded files (from BulkMediaUpload) into one
   // draft GalleryItem per file, defaulted to the 'Events' category since
   // that's the common case (bulk-uploading photos/videos from an event).
-  // Nothing is saved to the server yet — the admin reviews/edits the new
-  // entries like any other gallery item, then hits "Save All gallery".
+  // Nothing is saved to the server yet — the admin reviews/edits each new
+  // entry, then hits that item's own "Save This Milestone" button.
   const handleBulkGalleryUpload = (items: UploadedMediaItem[]) => {
     if (!items.length) return;
     const dateLabel = new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
@@ -520,7 +588,7 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
     setLocalGallery(prev => [...newItems, ...prev]);
     setSelectedItemId(newItems[0].id);
     triggerNotification(
-      `${newItems.length} file${newItems.length === 1 ? '' : 's'} uploaded — review the details below, then click "Save All gallery" to publish.`
+      `${newItems.length} file${newItems.length === 1 ? '' : 's'} uploaded — review the details, then click "Save This Milestone" on each to publish it.`
     );
   };
 
@@ -537,7 +605,7 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
     }));
     setLocalGallery(prev => prev.map(g => g.id === itemId ? { ...g, media: [...(g.media || []), ...newMedia] } : g));
     triggerNotification(
-      `${newMedia.length} file${newMedia.length === 1 ? '' : 's'} added to this milestone's gallery — click "Save All gallery" to publish.`
+      `${newMedia.length} file${newMedia.length === 1 ? '' : 's'} added to this milestone's gallery — click "Save This Milestone" to publish.`
     );
   };
 
@@ -586,6 +654,7 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
         email: newMemberEmail.trim(),
         password: newMemberPassword.trim(),
         duesAmount: newMemberDues ? Number(newMemberDues) : 0,
+        executiveDuesAmount: newMemberExecutiveDues ? Number(newMemberExecutiveDues) : 0,
         chapter: newMemberChapter.trim() || undefined,
         role: newMemberRole.trim() || undefined,
       });
@@ -595,6 +664,7 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
       setNewMemberEmail('');
       setNewMemberPassword('');
       setNewMemberDues('');
+      setNewMemberExecutiveDues('');
       setNewMemberChapter('');
       setNewMemberRole('');
       triggerNotification(`Member account created for ${created.fullName}. Share the username and temporary password with them securely — they'll be prompted to set their own password on first login.`);
@@ -607,6 +677,7 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
     try {
       const updated = await updateMemberAccount(id, {
         duesAmount: memberEditDues ? Number(memberEditDues) : 0,
+        executiveDuesAmount: memberEditExecutiveDues ? Number(memberEditExecutiveDues) : 0,
         status: memberEditStatus,
         ...(memberEditUsername.trim() ? { username: memberEditUsername.trim() } : {}),
         ...(memberResetPassword.trim() ? { resetPassword: memberResetPassword.trim() } : {}),
@@ -696,18 +767,40 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
       description: "A summary of the upcoming sovereign family event, mission meetup, or music concert.",
       image: "https://images.unsplash.com/photo-1511578314322-379afb476865?auto=format&fit=crop&q=80&w=800&h=500",
       category: "Summit",
-      buttonText: "Reserve Seat",
-      buttonLink: "#contact"
     };
     setLocalEvents(prev => [newEvent, ...prev]);
     setSelectedItemId(newEvent.id);
     setIsAddingNew(true);
   };
 
-  const handleDeleteEvent = (id: string) => {
-    if (window.confirm("Are you sure you want to delete this event?")) {
+  const handleSaveEventItem = async (id: string) => {
+    const event = localEvents.find(e => e.id === id);
+    if (!event) return;
+    setItemActionId(id);
+    setLocalError(null);
+    try {
+      await saveItem('events', event);
+      triggerNotification(`Saved "${event.title}".`);
+    } catch (err: any) {
+      setLocalError(err.message || 'Failed to save event');
+    } finally {
+      setItemActionId(null);
+    }
+  };
+
+  const handleDeleteEvent = async (id: string) => {
+    if (!window.confirm("Are you sure you want to delete this event? This deletes it immediately — there's no separate save step.")) return;
+    setItemActionId(id);
+    setLocalError(null);
+    try {
+      await deleteItem('events', id);
       setLocalEvents(prev => prev.filter(e => e.id !== id));
       if (selectedItemId === id) setSelectedItemId(null);
+      triggerNotification('Event deleted.');
+    } catch (err: any) {
+      setLocalError(err.message || 'Failed to delete event');
+    } finally {
+      setItemActionId(null);
     }
   };
 
@@ -724,7 +817,7 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
     }));
     setLocalEvents(prev => prev.map(e => e.id === eventId ? { ...e, media: [...(e.media || []), ...newMedia] } : e));
     triggerNotification(
-      `${newMedia.length} file${newMedia.length === 1 ? '' : 's'} added to this event's gallery — click "Save All events" to publish.`
+      `${newMedia.length} file${newMedia.length === 1 ? '' : 's'} added to this event's gallery — click "Save This Event" to publish.`
     );
   };
 
@@ -824,10 +917,6 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
               Authorize Credentials
             </button>
           </form>
-
-          <div className="mt-8 text-center text-[10px] text-gray-600 uppercase tracking-wider font-semibold">
-            Default credentials are set to <span className="text-gray-400">admin / password</span>
-          </div>
         </motion.div>
       </div>
     );
@@ -873,16 +962,6 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
             >
               <LogOut className="w-3.5 h-3.5 text-luxury-gold" />
               Logout
-            </button>
-
-            {/* Reset Factory button */}
-            <button
-              onClick={handleResetToDefaults}
-              className="px-3.5 py-1.8 rounded border border-red-900/30 bg-red-950/15 hover:bg-red-950/40 text-red-400 hover:text-red-300 font-sans font-bold tracking-wider text-[10px] uppercase transition-colors flex items-center gap-1.5 cursor-pointer"
-              title="Reset server DB back to hardcoded defaults"
-            >
-              <RotateCcw className="w-3.5 h-3.5" />
-              Reset Server DB
             </button>
 
             {/* Close button */}
@@ -938,22 +1017,6 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                 </button>
               ))}
             </div>
-
-            {/* Quick Status */}
-            <div className="p-4 border-t border-gray-900 bg-[#070707] text-[10px] text-gray-600 font-mono flex flex-col gap-1.5">
-              <div className="flex justify-between">
-                <span>DATABASE STATUS:</span>
-                <span className="text-green-500 font-bold">● PERSISTENT</span>
-              </div>
-              <div className="flex justify-between">
-                <span>ENGINE:</span>
-                <span>JSON-FILE / EXPRESS</span>
-              </div>
-              <div className="flex justify-between">
-                <span>PORT INGRESS:</span>
-                <span>3000</span>
-              </div>
-            </div>
           </aside>
 
           {/* MAIN Workspace Area */}
@@ -986,7 +1049,8 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                   </button>
                 )}
 
-                {activeTab !== 'applications' && activeTab !== 'memberAccounts' && (
+                {activeTab !== 'applications' && activeTab !== 'memberAccounts' &&
+                 activeTab !== 'leaders' && activeTab !== 'gallery' && activeTab !== 'events' && (
                   <button
                     onClick={() => handleSaveSection(activeTab)}
                     disabled={saveLoading}
@@ -1151,9 +1215,23 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                               <h3 className="font-display text-sm font-black text-white uppercase tracking-wider">
                                 EDIT LEADERSHIP CARD
                               </h3>
-                              <span className="text-[10px] font-mono text-gray-500">
-                                ID: {leader.id}
-                              </span>
+                              <div className="flex items-center gap-3">
+                                <span className="text-[10px] font-mono text-gray-500">
+                                  ID: {leader.id}
+                                </span>
+                                <button
+                                  onClick={() => handleSaveLeaderItem(leader.id)}
+                                  disabled={itemActionId === leader.id}
+                                  className="px-3 py-1.5 rounded bg-gradient-to-r from-luxury-gold to-luxury-gold-dark text-black font-sans font-black tracking-widest text-[10px] uppercase transition-all shadow-[0_2px_10px_rgba(212,175,55,0.2)] disabled:opacity-50 flex items-center gap-1.5 cursor-pointer"
+                                >
+                                  {itemActionId === leader.id ? (
+                                    <RefreshCw className="w-3 h-3 animate-spin" />
+                                  ) : (
+                                    <Save className="w-3 h-3" />
+                                  )}
+                                  Save This Leader
+                                </button>
+                              </div>
                             </div>
 
                             <div className="grid grid-cols-2 gap-4">
@@ -1253,6 +1331,15 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
               {activeTab === 'gallery' && (
                 <div className="flex flex-col gap-6 h-full">
 
+                  {/* Powers the Category Tag field's suggestions below — every
+                      category currently in use across the gallery, so admins
+                      see what already exists before typing a brand-new one. */}
+                  <datalist id="gallery-category-options">
+                    {Array.from(new Set(localGallery.map((g) => g.category).filter(Boolean))).map((cat) => (
+                      <option key={cat} value={cat} />
+                    ))}
+                  </datalist>
+
                   <BulkMediaUpload onUploaded={handleBulkGalleryUpload} />
 
                   <div className="grid grid-cols-3 gap-6 flex-1 items-start min-h-0">
@@ -1319,9 +1406,23 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                               <h3 className="font-display text-sm font-black text-white uppercase tracking-wider">
                                 EDIT MILESTONE EVENT
                               </h3>
-                              <span className="text-[10px] font-mono text-gray-500">
-                                ID: {item.id}
-                              </span>
+                              <div className="flex items-center gap-3">
+                                <span className="text-[10px] font-mono text-gray-500">
+                                  ID: {item.id}
+                                </span>
+                                <button
+                                  onClick={() => handleSaveGalleryItem(item.id)}
+                                  disabled={itemActionId === item.id}
+                                  className="px-3 py-1.5 rounded bg-gradient-to-r from-luxury-gold to-luxury-gold-dark text-black font-sans font-black tracking-widest text-[10px] uppercase transition-all shadow-[0_2px_10px_rgba(212,175,55,0.2)] disabled:opacity-50 flex items-center gap-1.5 cursor-pointer"
+                                >
+                                  {itemActionId === item.id ? (
+                                    <RefreshCw className="w-3 h-3 animate-spin" />
+                                  ) : (
+                                    <Save className="w-3 h-3" />
+                                  )}
+                                  Save This Milestone
+                                </button>
+                              </div>
                             </div>
 
                             <div className="flex flex-col gap-1.5">
@@ -1336,18 +1437,21 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
 
                             <div className="grid grid-cols-2 gap-4">
                               <div className="flex flex-col gap-1.5">
-                                <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">Category Tag</label>
-                                <select
+                                <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">
+                                  Category Tag
+                                </label>
+                                {/* Freeform + a datalist of categories already in use — type an
+                                    existing one to reuse it, or a brand-new name to create one.
+                                    Any category typed here immediately becomes its own filter
+                                    button on the public Legacy Gallery once saved. */}
+                                <input
+                                  type="text"
+                                  list="gallery-category-options"
                                   value={item.category}
                                   onChange={(e) => handleGalleryChange(item.id, 'category', e.target.value)}
-                                  className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold cursor-pointer"
-                                >
-                                  <option value="Legacy">Legacy</option>
-                                  <option value="Community">Community</option>
-                                  <option value="Philanthropy">Philanthropy</option>
-                                  <option value="Movement">Movement</option>
-                                  <option value="Events">Events</option>
-                                </select>
+                                  placeholder="e.g. Legacy, Community, Philanthropy..."
+                                  className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold"
+                                />
                               </div>
                               <div className="flex flex-col gap-1.5">
                                 <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">Date Display</label>
@@ -1499,9 +1603,23 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                               <h3 className="font-display text-sm font-black text-white uppercase tracking-wider">
                                 EDIT UPCOMING EVENT
                               </h3>
-                              <span className="text-[10px] font-mono text-gray-500">
-                                ID: {event.id}
-                              </span>
+                              <div className="flex items-center gap-3">
+                                <span className="text-[10px] font-mono text-gray-500">
+                                  ID: {event.id}
+                                </span>
+                                <button
+                                  onClick={() => handleSaveEventItem(event.id)}
+                                  disabled={itemActionId === event.id}
+                                  className="px-3 py-1.5 rounded bg-gradient-to-r from-luxury-gold to-luxury-gold-dark text-black font-sans font-black tracking-widest text-[10px] uppercase transition-all shadow-[0_2px_10px_rgba(212,175,55,0.2)] disabled:opacity-50 flex items-center gap-1.5 cursor-pointer"
+                                >
+                                  {itemActionId === event.id ? (
+                                    <RefreshCw className="w-3 h-3 animate-spin" />
+                                  ) : (
+                                    <Save className="w-3 h-3" />
+                                  )}
+                                  Save This Event
+                                </button>
+                              </div>
                             </div>
 
                             <div className="flex flex-col gap-1.5">
@@ -1561,27 +1679,6 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                               </div>
                             </div>
 
-                            <div className="grid grid-cols-2 gap-4">
-                              <div className="flex flex-col gap-1.5">
-                                <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">CTA Button Text</label>
-                                <input
-                                  type="text"
-                                  value={event.buttonText || ''}
-                                  onChange={(e) => handleEventChange(event.id, 'buttonText', e.target.value)}
-                                  className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold"
-                                />
-                              </div>
-                              <div className="flex flex-col gap-1.5">
-                                <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">CTA Button Link</label>
-                                <input
-                                  type="text"
-                                  value={event.buttonLink || ''}
-                                  onChange={(e) => handleEventChange(event.id, 'buttonLink', e.target.value)}
-                                  className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold"
-                                />
-                              </div>
-                            </div>
-
                             <div className="grid grid-cols-2 gap-4 bg-jet-black/60 border border-gray-900 rounded p-3">
                               <div className="flex flex-col gap-1.5">
                                 <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">
@@ -1606,10 +1703,26 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                                   className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold"
                                 />
                               </div>
+                              <div className="col-span-2 flex flex-col gap-1.5">
+                                <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">
+                                  Payment Button Label
+                                </label>
+                                <input
+                                  type="text"
+                                  placeholder="Make Payments"
+                                  value={event.payButtonText || ''}
+                                  onChange={(e) => handleEventChange(event.id, 'payButtonText', e.target.value)}
+                                  className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold"
+                                />
+                              </div>
                               <p className="col-span-2 text-[9px] text-gray-500 leading-relaxed">
-                                When a price is set, the public site shows a "Pay & Register" button (Paystack) here instead of the CTA link above.
+                                When a price is set, the public site and Member Portal show this button (default "Make Payments") followed by the price, opening Paystack checkout. Leave price at 0 for a free event — those automatically show a "Confirm Attendance" (Yes / No / Maybe) prompt instead, with responses tracked below.
                               </p>
                             </div>
+
+                            {(!event.price || event.price <= 0) && (
+                              <EventRsvpPanel eventId={event.id} />
+                            )}
 
                             <ImageUpload
                               value={event.image}
@@ -2335,15 +2448,29 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                               className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold"
                             />
                           </div>
-                          <input
-                            type="number"
-                            min={0}
-                            step="0.01"
-                            placeholder="Monthly Welfare Dues (0 = none)"
-                            value={newMemberDues}
-                            onChange={(e) => setNewMemberDues(e.target.value)}
-                            className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold w-full"
-                          />
+                          <div className="grid grid-cols-2 gap-2">
+                            <input
+                              type="number"
+                              min={0}
+                              step="0.01"
+                              placeholder="Monthly Welfare Dues (0 = none)"
+                              value={newMemberDues}
+                              onChange={(e) => setNewMemberDues(e.target.value)}
+                              className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold"
+                            />
+                            <input
+                              type="number"
+                              min={0}
+                              step="0.01"
+                              placeholder="Executive Dues (blank = not exec)"
+                              value={newMemberExecutiveDues}
+                              onChange={(e) => setNewMemberExecutiveDues(e.target.value)}
+                              className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold"
+                            />
+                          </div>
+                          <p className="text-[9px] text-gray-600 -mt-1">
+                            Executive Dues is an extra recurring charge on top of Welfare Dues — only set it for members flagged as executives.
+                          </p>
                           <button
                             type="submit"
                             className="w-full px-5 py-2.5 bg-luxury-gold hover:bg-luxury-gold-dark text-black font-sans font-black tracking-widest text-[10px] uppercase rounded transition-colors cursor-pointer"
@@ -2398,16 +2525,32 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                                   />
                                 </div>
                                 <div className="flex flex-col gap-1.5">
-                                  <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">Status</label>
-                                  <select
-                                    value={memberEditStatus}
-                                    onChange={(e) => setMemberEditStatus(e.target.value as 'active' | 'suspended')}
-                                    className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold cursor-pointer"
-                                  >
-                                    <option value="active">Active</option>
-                                    <option value="suspended">Suspended</option>
-                                  </select>
+                                  <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400 flex items-center gap-1">
+                                    <Crown className="w-3 h-3 text-luxury-gold" />
+                                    Executive Dues ({m.currency})
+                                  </label>
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    step="0.01"
+                                    placeholder="0 = not an executive"
+                                    value={memberEditExecutiveDues}
+                                    onChange={(e) => setMemberEditExecutiveDues(e.target.value)}
+                                    className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold"
+                                  />
                                 </div>
+                              </div>
+
+                              <div className="flex flex-col gap-1.5">
+                                <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">Status</label>
+                                <select
+                                  value={memberEditStatus}
+                                  onChange={(e) => setMemberEditStatus(e.target.value as 'active' | 'suspended')}
+                                  className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold cursor-pointer w-fit"
+                                >
+                                  <option value="active">Active</option>
+                                  <option value="suspended">Suspended</option>
+                                </select>
                               </div>
 
                               <div className="flex flex-col gap-1.5">
@@ -2491,6 +2634,93 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                                   )}
                                 </div>
                               </div>
+
+                              <div className="pt-4 border-t border-gray-900 grid grid-cols-1 md:grid-cols-2 gap-6">
+                                <div>
+                                  <h4 className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-500 mb-2 flex items-center gap-1.5">
+                                    <Crown className="w-3.5 h-3.5 text-luxury-gold" />
+                                    Executive Dues History
+                                  </h4>
+                                  {selectedMemberHistoryLoading ? (
+                                    <Loader2 className="w-4 h-4 animate-spin text-luxury-gold/50" />
+                                  ) : Number(m.executiveDuesAmount) <= 0 ? (
+                                    <p className="text-[10px] text-gray-600">Not flagged as an executive.</p>
+                                  ) : selectedMemberExecutiveDues.length === 0 ? (
+                                    <p className="text-[10px] text-gray-600">No executive dues payments yet.</p>
+                                  ) : (
+                                    <div className="space-y-1.5 max-h-[220px] overflow-y-auto pr-1">
+                                      {selectedMemberExecutiveDues.map((d) => (
+                                        <div key={d.id} className="flex items-center justify-between bg-jet-black border border-gray-900 rounded px-2.5 py-2 text-[10px]">
+                                          <span className="text-gray-300">{d.period}</span>
+                                          <span className={`font-black uppercase tracking-wider ${
+                                            d.status === 'success' ? 'text-green-400' : d.status === 'failed' ? 'text-red-400' : 'text-gray-500'
+                                          }`}>
+                                            {d.currency} {d.amount.toFixed(2)} · {d.status}
+                                          </span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+
+                                <div>
+                                  <h4 className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-500 mb-2 flex items-center gap-1.5">
+                                    <Wallet className="w-3.5 h-3.5 text-luxury-gold" />
+                                    One-off Bills
+                                  </h4>
+                                  {selectedMemberHistoryLoading ? (
+                                    <Loader2 className="w-4 h-4 animate-spin text-luxury-gold/50" />
+                                  ) : selectedMemberBills.length === 0 ? (
+                                    <p className="text-[10px] text-gray-600">No bills issued yet.</p>
+                                  ) : (
+                                    <div className="space-y-1.5 max-h-[220px] overflow-y-auto pr-1">
+                                      {selectedMemberBills.map((b) => (
+                                        <div key={b.id} className="flex items-center justify-between bg-jet-black border border-gray-900 rounded px-2.5 py-2 text-[10px] gap-2">
+                                          <span className="text-gray-300 truncate">{b.label}</span>
+                                          <span className="flex items-center gap-1.5 shrink-0">
+                                            <span className={`font-black uppercase tracking-wider ${
+                                              b.status === 'success' ? 'text-green-400' : b.status === 'failed' ? 'text-red-400' : 'text-gray-500'
+                                            }`}>
+                                              {b.currency} {b.amount.toFixed(2)} · {b.status}
+                                            </span>
+                                            {b.status !== 'success' && (
+                                              <button
+                                                onClick={async () => {
+                                                  try {
+                                                    const updated = await updateBill(b.id, { markPaidChannel: 'cash' });
+                                                    setSelectedMemberBills((prev) => prev.map((x) => (x.id === updated.id ? updated : x)));
+                                                    triggerNotification('Bill marked as paid.');
+                                                  } catch (err: any) {
+                                                    setMemberAccountsError(err.message || 'Failed to update bill');
+                                                  }
+                                                }}
+                                                className="text-luxury-gold hover:text-white transition-colors cursor-pointer"
+                                                title="Mark paid manually (cash)"
+                                              >
+                                                <Check className="w-3 h-3" />
+                                              </button>
+                                            )}
+                                            <button
+                                              onClick={async () => {
+                                                if (!window.confirm(`Delete this bill (${b.label})? This cannot be undone.`)) return;
+                                                try {
+                                                  await deleteBill(b.id);
+                                                  setSelectedMemberBills((prev) => prev.filter((x) => x.id !== b.id));
+                                                } catch (err: any) {
+                                                  setMemberAccountsError(err.message || 'Failed to delete bill');
+                                                }
+                                              }}
+                                              className="text-gray-600 hover:text-red-400 transition-colors cursor-pointer"
+                                            >
+                                              <Trash2 className="w-3 h-3" />
+                                            </button>
+                                          </span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
                             </div>
                           );
                         })()
@@ -2522,24 +2752,191 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                         Payments ({filteredPayments.length}{filteredPayments.length !== payments.length ? ` of ${payments.length}` : ''})
                       </h4>
                       <p className="text-[10px] text-gray-500 font-sans">
-                        Every welfare dues and event payment across every member, newest first — for reconciling who paid what (including partial dues payments).
+                        Every welfare dues, executive dues, event, and one-off bill payment across every member, newest first — for reconciling who paid what (including partial dues payments).
                       </p>
                     </div>
-                    <button
-                      onClick={() => {
-                        if (showManualPaymentForm) {
-                          setShowManualPaymentForm(false);
-                        } else {
-                          resetManualPaymentForm();
-                          setShowManualPaymentForm(true);
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        onClick={() => {
+                          if (showBillForm) {
+                            setShowBillForm(false);
+                          } else {
+                            setBillLabel(''); setBillAmount(''); setBillCurrency(''); setBillRecipientIds(new Set()); setBillFormError('');
+                            setShowBillForm(true);
+                          }
+                        }}
+                        className="px-4 py-2 rounded border border-luxury-gold/40 text-luxury-gold hover:bg-luxury-gold/10 font-sans font-black tracking-widest text-[10px] uppercase transition-all cursor-pointer flex items-center gap-1.5"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        {showBillForm ? 'Cancel' : 'Create One-off Bill'}
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (showManualPaymentForm) {
+                            setShowManualPaymentForm(false);
+                          } else {
+                            resetManualPaymentForm();
+                            setShowManualPaymentForm(true);
+                          }
+                        }}
+                        className="px-4 py-2 rounded bg-gradient-to-r from-luxury-gold to-luxury-gold-dark text-black font-sans font-black tracking-widest text-[10px] uppercase transition-all shadow-[0_2px_10px_rgba(212,175,55,0.2)] cursor-pointer flex items-center gap-1.5"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        {showManualPaymentForm ? 'Cancel' : 'Log Manual Payment'}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Create one-off bill — a non-recurring charge for a single
+                      member or a bulk group; stays unpaid until they pay it
+                      themselves from the portal (or it's marked paid manually
+                      from their detail panel in Member Accounts). */}
+                  {showBillForm && (
+                    <form
+                      onSubmit={async (e) => {
+                        e.preventDefault();
+                        setBillFormError('');
+                        if (!billLabel.trim()) { setBillFormError('Enter a label for this bill.'); return; }
+                        const amountNum = Number(billAmount);
+                        if (!Number.isFinite(amountNum) || amountNum <= 0) { setBillFormError('Enter a valid amount greater than zero.'); return; }
+                        if (billRecipientIds.size === 0) { setBillFormError('Select at least one member.'); return; }
+                        setBillSubmitting(true);
+                        try {
+                          await createBill({
+                            memberIds: Array.from(billRecipientIds),
+                            label: billLabel.trim(),
+                            amount: amountNum,
+                            currency: billCurrency || undefined,
+                          });
+                          const refreshed = await fetchAllPaymentsAdmin();
+                          setPayments(refreshed);
+                          triggerNotification(`Bill "${billLabel.trim()}" created for ${billRecipientIds.size} member${billRecipientIds.size === 1 ? '' : 's'}.`);
+                          setBillLabel(''); setBillAmount(''); setBillCurrency(''); setBillRecipientIds(new Set());
+                          setShowBillForm(false);
+                        } catch (err: any) {
+                          setBillFormError(err.message || 'Failed to create bill.');
+                        } finally {
+                          setBillSubmitting(false);
                         }
                       }}
-                      className="shrink-0 px-4 py-2 rounded bg-gradient-to-r from-luxury-gold to-luxury-gold-dark text-black font-sans font-black tracking-widest text-[10px] uppercase transition-all shadow-[0_2px_10px_rgba(212,175,55,0.2)] cursor-pointer flex items-center gap-1.5"
+                      className="bg-charcoal-card rounded-lg border border-luxury-gold/20 p-5 space-y-4"
                     >
-                      <Plus className="w-3.5 h-3.5" />
-                      {showManualPaymentForm ? 'Cancel' : 'Log Manual Payment'}
-                    </button>
-                  </div>
+                      <h5 className="font-display text-xs font-black text-white uppercase tracking-widest">
+                        Create One-off Bill
+                      </h5>
+                      <p className="text-[10px] text-gray-500 -mt-2">
+                        A non-recurring charge — e.g. an anniversary levy or a fine. It stays unpaid until the member(s) pay it from their own portal.
+                      </p>
+
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                        <div>
+                          <label className="font-sans text-[9px] font-black uppercase tracking-widest text-gray-500 block mb-1">Label</label>
+                          <input
+                            type="text"
+                            placeholder="e.g. 10th Anniversary Levy"
+                            value={billLabel}
+                            onChange={(e) => setBillLabel(e.target.value)}
+                            className="w-full bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold"
+                          />
+                        </div>
+                        <div>
+                          <label className="font-sans text-[9px] font-black uppercase tracking-widest text-gray-500 block mb-1">Amount</label>
+                          <input
+                            type="number"
+                            min={0.01}
+                            step="0.01"
+                            placeholder="0.00"
+                            value={billAmount}
+                            onChange={(e) => setBillAmount(e.target.value)}
+                            className="w-full bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold"
+                          />
+                        </div>
+                        <div>
+                          <label className="font-sans text-[9px] font-black uppercase tracking-widest text-gray-500 block mb-1">Currency</label>
+                          <input
+                            type="text"
+                            placeholder="GHS"
+                            value={billCurrency}
+                            onChange={(e) => setBillCurrency(e.target.value)}
+                            className="w-full bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold"
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <div className="flex items-center justify-between mb-1.5">
+                          <label className="font-sans text-[9px] font-black uppercase tracking-widest text-gray-500">
+                            Bill Recipients ({billRecipientIds.size} selected)
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (billRecipientIds.size === memberAccounts.length) {
+                                setBillRecipientIds(new Set());
+                              } else {
+                                setBillRecipientIds(new Set(memberAccounts.map((m) => m.id)));
+                              }
+                            }}
+                            className="text-[9px] font-black uppercase tracking-widest text-luxury-gold hover:text-white transition-colors cursor-pointer"
+                          >
+                            {billRecipientIds.size === memberAccounts.length ? 'Deselect All' : 'Select All'}
+                          </button>
+                        </div>
+                        <div className="max-h-[220px] overflow-y-auto bg-jet-black border border-gray-800 rounded p-2 space-y-1">
+                          {memberAccounts.length === 0 ? (
+                            <p className="text-[10px] text-gray-600 px-1 py-1">No member accounts yet.</p>
+                          ) : (
+                            memberAccounts.map((m) => (
+                              <label
+                                key={m.id}
+                                className="flex items-center gap-2 px-1.5 py-1.5 rounded hover:bg-charcoal-card cursor-pointer text-xs"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={billRecipientIds.has(m.id)}
+                                  onChange={() => {
+                                    setBillRecipientIds((prev) => {
+                                      const next = new Set(prev);
+                                      if (next.has(m.id)) next.delete(m.id); else next.add(m.id);
+                                      return next;
+                                    });
+                                  }}
+                                  className="accent-luxury-gold cursor-pointer"
+                                />
+                                <span className="text-gray-300">{m.fullName}</span>
+                                <span className="text-gray-600 text-[10px]">({m.email})</span>
+                              </label>
+                            ))
+                          )}
+                        </div>
+                      </div>
+
+                      {billFormError && (
+                        <div className="flex items-center gap-2 text-xs text-red-500 bg-red-500/10 border border-red-500/20 p-3 rounded">
+                          <AlertCircle className="w-4 h-4 shrink-0" />
+                          <span>{billFormError}</span>
+                        </div>
+                      )}
+
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="submit"
+                          disabled={billSubmitting}
+                          className="px-5 py-2.5 bg-gradient-to-r from-luxury-gold to-luxury-gold-dark text-black font-sans font-black tracking-widest text-[10px] uppercase rounded transition-all shadow-[0_2px_10px_rgba(212,175,55,0.2)] disabled:opacity-50 flex items-center gap-2 cursor-pointer"
+                        >
+                          {billSubmitting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                          Create Bill
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setShowBillForm(false)}
+                          className="px-4 py-2.5 rounded border border-gray-800 text-gray-400 hover:text-white font-sans font-black tracking-widest text-[10px] uppercase transition-colors cursor-pointer"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </form>
+                  )}
 
                   {/* Manual payment entry — for cash, bank transfer, or any
                       payment collected outside Paystack */}
@@ -2568,15 +2965,16 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                           <label className="font-sans text-[9px] font-black uppercase tracking-widest text-gray-500 block mb-1">Type</label>
                           <select
                             value={manualType}
-                            onChange={(e) => setManualType(e.target.value as 'dues' | 'event')}
+                            onChange={(e) => setManualType(e.target.value as 'dues' | 'event' | 'executive-dues')}
                             className="w-full bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold cursor-pointer"
                           >
                             <option value="dues">Welfare Dues</option>
+                            <option value="executive-dues">Executive Dues</option>
                             <option value="event">Event Registration</option>
                           </select>
                         </div>
 
-                        {manualType === 'dues' ? (
+                        {(manualType === 'dues' || manualType === 'executive-dues') ? (
                           <div>
                             <label className="font-sans text-[9px] font-black uppercase tracking-widest text-gray-500 block mb-1">Period</label>
                             <input
@@ -2726,12 +3124,14 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                       <label className="font-sans text-[9px] font-black uppercase tracking-widest text-gray-500 block mb-1">Type</label>
                       <select
                         value={paymentsTypeFilter}
-                        onChange={(e) => setPaymentsTypeFilter(e.target.value as 'all' | 'dues' | 'event')}
+                        onChange={(e) => setPaymentsTypeFilter(e.target.value as 'all' | 'dues' | 'event' | 'executive-dues' | 'bill')}
                         className="bg-jet-black border border-gray-800 rounded px-3 py-2 text-xs text-white focus:outline-none focus:border-luxury-gold cursor-pointer"
                       >
                         <option value="all">All</option>
-                        <option value="dues">Dues</option>
+                        <option value="dues">Welfare Dues</option>
+                        <option value="executive-dues">Executive Dues</option>
                         <option value="event">Events</option>
+                        <option value="bill">One-off Bills</option>
                       </select>
                     </div>
                     <div>
@@ -2808,13 +3208,16 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                               </td>
                               <td className="px-4 py-3">
                                 <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded border ${
-                                  p.type === 'dues' ? 'bg-luxury-gold/10 text-luxury-gold border-luxury-gold/20' : 'bg-blue-950/30 text-blue-400 border-blue-900/40'
+                                  p.type === 'dues' ? 'bg-luxury-gold/10 text-luxury-gold border-luxury-gold/20'
+                                  : p.type === 'executive-dues' ? 'bg-purple-950/30 text-purple-400 border-purple-900/40'
+                                  : p.type === 'bill' ? 'bg-orange-950/30 text-orange-400 border-orange-900/40'
+                                  : 'bg-blue-950/30 text-blue-400 border-blue-900/40'
                                 }`}>
-                                  {p.type}
+                                  {p.type === 'executive-dues' ? 'exec dues' : p.type}
                                 </span>
                               </td>
                               <td className="px-4 py-3 text-gray-300 max-w-[180px] truncate">
-                                {p.type === 'dues' ? formatPeriodLabel(p.label) : p.label}
+                                {(p.type === 'dues' || p.type === 'executive-dues') ? formatPeriodLabel(p.label) : p.label}
                               </td>
                               <td className="px-4 py-3 text-gray-400 text-[10px]">{formatChannel(p.channel)}</td>
                               <td className="px-4 py-3 text-right font-mono text-gray-200 whitespace-nowrap">
@@ -2851,6 +3254,65 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
 
       </motion.div>
 
+    </div>
+  );
+}
+
+// Read-only attendee list for a free event's RSVPs (Yes/No/Maybe), fetched
+// fresh whenever the admin has this event's edit panel open. Kept as its
+// own component (rather than inline state on CmsDashboard) so it can fetch
+// per-event without complicating the shared events editor state.
+function EventRsvpPanel({ eventId }: { eventId: string }) {
+  const [rsvps, setRsvps] = useState<AdminEventRsvp[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  React.useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError('');
+    fetchEventRsvpsAdmin(eventId)
+      .then((data) => { if (!cancelled) setRsvps(data); })
+      .catch((err: any) => { if (!cancelled) setError(err.message || 'Failed to load RSVPs'); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [eventId]);
+
+  const counts = { yes: 0, maybe: 0, no: 0 };
+  rsvps.forEach((r) => { counts[r.response as 'yes' | 'maybe' | 'no']++; });
+
+  return (
+    <div className="bg-jet-black/60 border border-gray-900 rounded p-3 space-y-2.5">
+      <div className="flex items-center justify-between">
+        <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">
+          RSVP Responses ({rsvps.length})
+        </label>
+        <div className="flex items-center gap-2 text-[9px] font-mono">
+          <span className="text-green-400">{counts.yes} yes</span>
+          <span className="text-yellow-400">{counts.maybe} maybe</span>
+          <span className="text-red-400">{counts.no} no</span>
+        </div>
+      </div>
+      {loading ? (
+        <Loader2 className="w-4 h-4 animate-spin text-luxury-gold/50" />
+      ) : error ? (
+        <p className="text-[10px] text-red-400">{error}</p>
+      ) : rsvps.length === 0 ? (
+        <p className="text-[10px] text-gray-600">No RSVPs yet.</p>
+      ) : (
+        <div className="space-y-1.5 max-h-[200px] overflow-y-auto pr-1">
+          {rsvps.map((r) => (
+            <div key={r.id} className="flex items-center justify-between bg-charcoal-card border border-gray-900 rounded px-2.5 py-2 text-[10px]">
+              <span className="text-gray-300 truncate">{r.memberName}</span>
+              <span className={`font-black uppercase tracking-wider shrink-0 ${
+                r.response === 'yes' ? 'text-green-400' : r.response === 'no' ? 'text-red-400' : 'text-yellow-400'
+              }`}>
+                {r.response}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

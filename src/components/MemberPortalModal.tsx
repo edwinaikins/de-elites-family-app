@@ -3,21 +3,26 @@ import { motion, AnimatePresence } from 'motion/react';
 import {
   X, LogIn, LogOut, Crown, User, Wallet, Ticket, AlertCircle,
   CheckCircle2, Loader2, Save, KeyRound, Calendar, MapPin, Clock,
-  CreditCard, ArrowUpRight,
+  CreditCard,
 } from 'lucide-react';
 import { useMemberAuth } from '../context/MemberAuthContext';
 import { useCms } from '../context/CmsContext';
 import { useEventPayments } from '../hooks/useEventPayments';
+import { useEventRsvp } from '../hooks/useEventRsvp';
 import { usePaymentsConfig } from '../hooks/usePaymentsConfig';
 import {
   fetchMyDuesHistory, fetchMyEventPayments, fetchMyDuesBalance, initializeDuesPayment,
+  fetchMyExecutiveDuesHistory, fetchMyExecutiveDuesBalance, initializeExecutiveDuesPayment,
+  fetchMyBills, initializeBillPayment,
   verifyPayment, changeMyPassword,
 } from '../lib/memberClient';
 import { payWithPaystack } from '../lib/paystack';
-import { WelfareDuesPayment, EventPayment, DuesBalance } from '../types';
+import { WelfareDuesPayment, EventPayment, MemberBill, DuesBalance, EventRsvpResponse } from '../types';
 import { ImageUpload } from './ImageUpload';
 
-type PortalTab = 'profile' | 'dues' | 'events';
+const RSVP_LABEL: Record<EventRsvpResponse, string> = { yes: 'Yes, Attending', no: 'Not Attending', maybe: 'Maybe' };
+
+type PortalTab = 'profile' | 'dues' | 'events' | 'bills';
 
 function currentPeriod(): string {
   const now = new Date();
@@ -48,9 +53,11 @@ export default function MemberPortalModal() {
   const { member, token, loading, isPortalOpen, closePortal, login, logout, updateBio, refreshProfile } = useMemberAuth();
   const { events } = useCms();
   const { paidEventIds, payingId, errorById, payForEvent } = useEventPayments();
+  const { rsvpByEventId, submittingId: rsvpSubmittingId, errorById: rsvpErrorById, rsvpForEvent } = useEventRsvp();
   const { mock: mockPayments } = usePaymentsConfig();
 
   const [activeTab, setActiveTab] = useState<PortalTab>('profile');
+  const [rsvpPopupEventId, setRsvpPopupEventId] = useState<string | null>(null);
 
   // Login form state
   const [loginUsername, setLoginUsername] = useState('');
@@ -94,6 +101,23 @@ export default function MemberPortalModal() {
   const [eventPayments, setEventPayments] = useState<EventPayment[]>([]);
   const [eventPaymentsLoading, setEventPaymentsLoading] = useState(false);
 
+  // Executive Dues state — a second, separate recurring charge billed on
+  // top of Welfare Dues, only shown at all when member.executiveDuesAmount
+  // > 0. Mirrors the Welfare Dues state above exactly, sharing the same
+  // `selectedPeriod` month picker since it's still just "which month".
+  const [execDuesHistory, setExecDuesHistory] = useState<WelfareDuesPayment[]>([]);
+  const [execDuesPaying, setExecDuesPaying] = useState(false);
+  const [execDuesError, setExecDuesError] = useState('');
+  const [execDuesBalance, setExecDuesBalance] = useState<DuesBalance | null>(null);
+  const [execDuesBalanceLoading, setExecDuesBalanceLoading] = useState(false);
+  const [execPayAmountDraft, setExecPayAmountDraft] = useState('');
+
+  // One-off bills state (separate "Bills" tab)
+  const [bills, setBills] = useState<MemberBill[]>([]);
+  const [billsLoading, setBillsLoading] = useState(false);
+  const [billsError, setBillsError] = useState('');
+  const [payingBillId, setPayingBillId] = useState<string | null>(null);
+
   useEffect(() => {
     if (member) setBioDraft(member.bio || '');
   }, [member?.id]);
@@ -106,12 +130,23 @@ export default function MemberPortalModal() {
         .then(setDuesHistory)
         .catch((err) => setDuesError(err.message || 'Failed to load dues history'))
         .finally(() => setDuesLoading(false));
+      if (member.executiveDuesAmount > 0) {
+        fetchMyExecutiveDuesHistory(token)
+          .then(setExecDuesHistory)
+          .catch((err) => setExecDuesError(err.message || 'Failed to load executive dues history'));
+      }
     } else if (activeTab === 'events') {
       setEventPaymentsLoading(true);
       fetchMyEventPayments(token)
         .then(setEventPayments)
         .catch(() => {})
         .finally(() => setEventPaymentsLoading(false));
+    } else if (activeTab === 'bills') {
+      setBillsLoading(true);
+      fetchMyBills(token)
+        .then(setBills)
+        .catch((err) => setBillsError(err.message || 'Failed to load bills'))
+        .finally(() => setBillsLoading(false));
     }
   }, [isPortalOpen, activeTab, member, token]);
 
@@ -119,15 +154,27 @@ export default function MemberPortalModal() {
   // to refetch whenever the member switches which month they're looking at,
   // not just when the Dues tab is first opened.
   useEffect(() => {
-    if (!isPortalOpen || !member || !token || activeTab !== 'dues' || member.duesAmount <= 0) return;
-    setDuesBalanceLoading(true);
-    fetchMyDuesBalance(token, selectedPeriod)
-      .then((balance) => {
-        setDuesBalance(balance);
-        setPayAmountDraft(balance.remaining > 0 ? balance.remaining.toFixed(2) : '');
-      })
-      .catch(() => {})
-      .finally(() => setDuesBalanceLoading(false));
+    if (!isPortalOpen || !member || !token || activeTab !== 'dues') return;
+    if (member.duesAmount > 0) {
+      setDuesBalanceLoading(true);
+      fetchMyDuesBalance(token, selectedPeriod)
+        .then((balance) => {
+          setDuesBalance(balance);
+          setPayAmountDraft(balance.remaining > 0 ? balance.remaining.toFixed(2) : '');
+        })
+        .catch(() => {})
+        .finally(() => setDuesBalanceLoading(false));
+    }
+    if (member.executiveDuesAmount > 0) {
+      setExecDuesBalanceLoading(true);
+      fetchMyExecutiveDuesBalance(token, selectedPeriod)
+        .then((balance) => {
+          setExecDuesBalance(balance);
+          setExecPayAmountDraft(balance.remaining > 0 ? balance.remaining.toFixed(2) : '');
+        })
+        .catch(() => {})
+        .finally(() => setExecDuesBalanceLoading(false));
+    }
   }, [isPortalOpen, activeTab, member, token, selectedPeriod]);
 
   if (!isPortalOpen) return null;
@@ -254,6 +301,66 @@ export default function MemberPortalModal() {
     }
   };
 
+  const handlePayExecutiveDues = async () => {
+    if (!token) return;
+    setExecDuesError('');
+    const requested = execPayAmountDraft ? Number(execPayAmountDraft) : undefined;
+    if (requested !== undefined && (!Number.isFinite(requested) || requested <= 0)) {
+      setExecDuesError('Enter a valid amount to pay.');
+      return;
+    }
+    setExecDuesPaying(true);
+    try {
+      const init = await initializeExecutiveDuesPayment(token, selectedPeriod, requested);
+      const { reference, channel } = await payWithPaystack({
+        publicKey: init.publicKey,
+        email: init.email,
+        amount: init.amount,
+        currency: init.currency,
+        reference: init.reference,
+        metadata: { type: 'executive-dues', period: selectedPeriod },
+        mock: init.mock,
+      });
+      await verifyPayment(token, reference, channel);
+      const [refreshedHistory, refreshedBalance] = await Promise.all([
+        fetchMyExecutiveDuesHistory(token),
+        fetchMyExecutiveDuesBalance(token, selectedPeriod),
+      ]);
+      setExecDuesHistory(refreshedHistory);
+      setExecDuesBalance(refreshedBalance);
+      setExecPayAmountDraft(refreshedBalance.remaining > 0 ? refreshedBalance.remaining.toFixed(2) : '');
+    } catch (err: any) {
+      setExecDuesError(err.message || 'Payment could not be completed.');
+    } finally {
+      setExecDuesPaying(false);
+    }
+  };
+
+  const handlePayBill = async (bill: MemberBill) => {
+    if (!token) return;
+    setBillsError('');
+    setPayingBillId(bill.id);
+    try {
+      const init = await initializeBillPayment(token, bill.id);
+      const { reference, channel } = await payWithPaystack({
+        publicKey: init.publicKey,
+        email: init.email,
+        amount: init.amount,
+        currency: init.currency,
+        reference: init.reference,
+        metadata: { type: 'bill', billId: bill.id },
+        mock: init.mock,
+      });
+      await verifyPayment(token, reference, channel);
+      const refreshedBills = await fetchMyBills(token);
+      setBills(refreshedBills);
+    } catch (err: any) {
+      setBillsError(err.message || 'Payment could not be completed.');
+    } finally {
+      setPayingBillId(null);
+    }
+  };
+
   // Fully paid / partially paid / nothing paid yet for the currently
   // selected period, derived from the authoritative server-computed balance
   // rather than re-deriving it from duesHistory client-side.
@@ -261,6 +368,13 @@ export default function MemberPortalModal() {
     !duesBalance || duesBalance.remaining >= duesBalance.duesAmount
       ? 'unpaid'
       : duesBalance.remaining <= 0
+      ? 'paid'
+      : 'partial';
+
+  const execDuesStatusForPeriod: 'paid' | 'partial' | 'unpaid' =
+    !execDuesBalance || execDuesBalance.remaining >= execDuesBalance.duesAmount
+      ? 'unpaid'
+      : execDuesBalance.remaining <= 0
       ? 'paid'
       : 'partial';
 
@@ -467,6 +581,7 @@ export default function MemberPortalModal() {
                     { key: 'profile' as const, label: 'Profile', icon: User },
                     { key: 'dues' as const, label: 'Welfare Dues', icon: Wallet },
                     { key: 'events' as const, label: 'Events', icon: Ticket },
+                    { key: 'bills' as const, label: 'Bills', icon: CreditCard },
                   ].map((tab) => (
                     <button
                       key={tab.key}
@@ -609,12 +724,21 @@ export default function MemberPortalModal() {
                           </span>
                         </div>
                         {member.duesAmount > 0 && (
-                          <input
-                            type="month"
-                            value={selectedPeriod}
-                            onChange={(e) => setSelectedPeriod(e.target.value)}
-                            className="bg-charcoal-card border border-gray-800 rounded px-3 py-2 text-xs text-white focus:outline-none focus:border-luxury-gold"
-                          />
+                          <div className="flex flex-col items-end gap-1">
+                            <input
+                              type="month"
+                              value={selectedPeriod}
+                              onChange={(e) => setSelectedPeriod(e.target.value)}
+                              className="bg-charcoal-card border border-gray-800 rounded px-3 py-2 text-xs text-white focus:outline-none focus:border-luxury-gold"
+                            />
+                            {/* Nothing stops a member from picking a future month here and
+                                paying it off right now — this just makes that discoverable,
+                                since a bare native month-picker doesn't hint that jumping
+                                forward is allowed (or why you'd want to). */}
+                            <span className="text-[9px] text-gray-600 uppercase tracking-wider font-semibold">
+                              Pick a future month to pay dues in advance
+                            </span>
+                          </div>
                         )}
                       </div>
 
@@ -719,6 +843,117 @@ export default function MemberPortalModal() {
                         </div>
                       )}
                     </div>
+
+                    {/* Executive Dues — a second, separate recurring charge billed on
+                        top of Welfare Dues above; only shown at all to members flagged
+                        as executives (executiveDuesAmount > 0). */}
+                    {member.executiveDuesAmount > 0 && (
+                      <>
+                        <div className="bg-jet-black border border-luxury-gold/20 rounded-lg p-5">
+                          <div className="flex items-center justify-between flex-wrap gap-3">
+                            <div>
+                              <span className="font-sans text-[10px] font-black uppercase tracking-widest text-luxury-gold flex items-center gap-1.5 mb-1">
+                                <Crown className="w-3 h-3" /> Executive Dues
+                              </span>
+                              <span className="font-display text-2xl font-black text-luxury-gold">
+                                {member.currency} {member.executiveDuesAmount.toFixed(2)}
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="mt-4 pt-4 border-t border-gray-900/60">
+                            <div className="flex items-center justify-between mb-3">
+                              <span className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-500">
+                                {formatPeriodLabel(selectedPeriod)}
+                              </span>
+                              <span
+                                className={`text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded border ${
+                                  execDuesStatusForPeriod === 'paid'
+                                    ? 'bg-green-950/40 text-green-400 border-green-900/40'
+                                    : execDuesStatusForPeriod === 'partial'
+                                    ? 'bg-yellow-950/30 text-yellow-400 border-yellow-900/40'
+                                    : 'bg-gray-800/60 text-gray-400 border-gray-700/40'
+                                }`}
+                              >
+                                {execDuesStatusForPeriod}
+                              </span>
+                            </div>
+
+                            {execDuesBalanceLoading ? (
+                              <div className="text-[10px] text-gray-500 flex items-center gap-1.5">
+                                <Loader2 className="w-3 h-3 animate-spin" /> Loading balance...
+                              </div>
+                            ) : execDuesBalance ? (
+                              <p className="text-[10px] text-gray-400 font-mono mb-3">
+                                {member.currency} {execDuesBalance.paid.toFixed(2)} of {member.currency} {execDuesBalance.duesAmount.toFixed(2)} paid
+                                {execDuesBalance.remaining > 0 && ` — ${member.currency} ${execDuesBalance.remaining.toFixed(2)} remaining`}
+                              </p>
+                            ) : null}
+
+                            {execDuesStatusForPeriod !== 'paid' && (
+                              <div className="flex items-center gap-2">
+                                <div className="flex-1">
+                                  <label className="font-sans text-[9px] font-black uppercase tracking-widest text-gray-500 block mb-1">
+                                    Amount to pay ({member.currency})
+                                  </label>
+                                  <input
+                                    type="number"
+                                    min={0.01}
+                                    step="0.01"
+                                    max={execDuesBalance?.remaining || undefined}
+                                    value={execPayAmountDraft}
+                                    onChange={(e) => setExecPayAmountDraft(e.target.value)}
+                                    placeholder="Full remaining balance"
+                                    className="w-full bg-charcoal-card border border-gray-800 rounded px-3 py-2 text-xs text-white focus:outline-none focus:border-luxury-gold"
+                                  />
+                                </div>
+                                <button
+                                  onClick={handlePayExecutiveDues}
+                                  disabled={execDuesPaying || execDuesBalanceLoading || !execDuesBalance || execDuesBalance.remaining <= 0}
+                                  className="px-4 py-2.5 rounded bg-gradient-to-r from-luxury-gold to-luxury-gold-dark text-black font-sans font-black tracking-widest text-[10px] uppercase transition-all shadow-[0_2px_10px_rgba(212,175,55,0.2)] disabled:opacity-50 flex items-center gap-1.5 cursor-pointer shrink-0 self-end"
+                                >
+                                  {execDuesPaying ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Crown className="w-3.5 h-3.5" />}
+                                  Pay
+                                </button>
+                              </div>
+                            )}
+                          </div>
+
+                          {execDuesError && (
+                            <div className="flex items-center gap-2 text-xs text-red-500 bg-red-500/10 border border-red-500/20 p-3 rounded mt-4">
+                              <AlertCircle className="w-4 h-4 shrink-0" />
+                              <span>{execDuesError}</span>
+                            </div>
+                          )}
+                        </div>
+
+                        <div>
+                          <h4 className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-500 mb-3">
+                            Executive Dues History
+                          </h4>
+                          {execDuesHistory.length === 0 ? (
+                            <div className="py-10 text-center text-gray-500 text-xs">No executive dues payments yet.</div>
+                          ) : (
+                            <div className="space-y-2">
+                              {execDuesHistory.map((d) => (
+                                <div key={d.id} className="flex items-center justify-between bg-jet-black border border-gray-900 rounded p-3">
+                                  <div>
+                                    <span className="font-sans text-xs font-bold text-white block">{formatPeriodLabel(d.period)}</span>
+                                    <span className="font-mono text-[10px] text-gray-500">
+                                      {d.currency} {d.amount.toFixed(2)}
+                                      {d.channel && ` · ${formatChannel(d.channel)}`}
+                                    </span>
+                                  </div>
+                                  <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded border ${statusBadgeClass(d.status)}`}>
+                                    {d.status}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </>
+                    )}
                   </div>
                 )}
 
@@ -762,6 +997,12 @@ export default function MemberPortalModal() {
                                   <span>{errorById[event.id]}</span>
                                 </div>
                               )}
+                              {rsvpErrorById[event.id] && (
+                                <div className="flex items-center gap-1.5 text-[10px] text-red-500 bg-red-500/10 border border-red-500/20 p-2 rounded mt-3">
+                                  <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                                  <span>{rsvpErrorById[event.id]}</span>
+                                </div>
+                              )}
 
                               <div className="mt-3">
                                 {event.price && event.price > 0 ? (
@@ -777,20 +1018,36 @@ export default function MemberPortalModal() {
                                       className="w-full py-2.5 rounded bg-gradient-to-r from-luxury-gold to-luxury-gold-dark text-black font-sans font-black tracking-widest text-[10px] uppercase transition-all shadow-[0_2px_10px_rgba(212,175,55,0.2)] cursor-pointer flex items-center justify-center gap-2 disabled:opacity-60"
                                     >
                                       {payingId === event.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CreditCard className="w-3.5 h-3.5" />}
-                                      Pay &amp; Register — {event.currency || 'GHS'} {event.price.toFixed(2)}
+                                      {event.payButtonText || 'Make Payments'} — {event.currency || 'GHS'} {event.price.toFixed(2)}
                                     </button>
                                   )
-                                ) : event.buttonLink ? (
-                                  <a
-                                    href={event.buttonLink}
-                                    target={event.buttonLink.startsWith('#') ? undefined : '_blank'}
-                                    rel={event.buttonLink.startsWith('#') ? undefined : 'noopener noreferrer'}
-                                    className="w-full py-2.5 rounded bg-charcoal-card border border-gray-800 hover:border-luxury-gold text-white hover:text-luxury-gold font-sans font-black tracking-widest text-[10px] uppercase transition-all duration-300 cursor-pointer flex items-center justify-center gap-2"
+                                ) : rsvpByEventId[event.id] ? (
+                                  <div className="flex items-center gap-2">
+                                    <div className={`flex-1 py-2.5 rounded border font-sans font-black tracking-widest text-[10px] uppercase flex items-center justify-center gap-2 ${
+                                      rsvpByEventId[event.id] === 'yes' ? 'bg-green-950/20 border-green-900/40 text-green-400'
+                                      : rsvpByEventId[event.id] === 'no' ? 'bg-red-950/20 border-red-900/40 text-red-400'
+                                      : 'bg-yellow-950/20 border-yellow-900/40 text-yellow-400'
+                                    }`}>
+                                      <CheckCircle2 className="w-3.5 h-3.5" />
+                                      {RSVP_LABEL[rsvpByEventId[event.id]]}
+                                    </div>
+                                    <button
+                                      onClick={() => setRsvpPopupEventId(event.id)}
+                                      className="shrink-0 px-3 py-2.5 rounded border border-gray-800 hover:border-luxury-gold/50 text-gray-400 hover:text-luxury-gold text-[9px] font-sans font-black uppercase tracking-widest transition-colors cursor-pointer"
+                                    >
+                                      Change
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <button
+                                    onClick={() => setRsvpPopupEventId(event.id)}
+                                    disabled={rsvpSubmittingId === event.id}
+                                    className="w-full py-2.5 rounded bg-gradient-to-r from-luxury-gold to-luxury-gold-dark text-black font-sans font-black tracking-widest text-[10px] uppercase transition-all shadow-[0_2px_10px_rgba(212,175,55,0.2)] cursor-pointer flex items-center justify-center gap-2 disabled:opacity-60"
                                   >
-                                    {event.buttonText || 'Register'}
-                                    <ArrowUpRight className="w-3.5 h-3.5" />
-                                  </a>
-                                ) : null}
+                                    {rsvpSubmittingId === event.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
+                                    Confirm Attendance
+                                  </button>
+                                )}
                               </div>
                             </div>
                           ))}
@@ -838,10 +1095,140 @@ export default function MemberPortalModal() {
                     </div>
                   </div>
                 )}
+
+                {activeTab === 'bills' && (() => {
+                  const outstanding = bills.filter((b) => b.status !== 'success');
+                  const paid = bills.filter((b) => b.status === 'success');
+                  return (
+                    <div className="space-y-8">
+                      {billsError && (
+                        <div className="flex items-center gap-2 text-xs text-red-500 bg-red-500/10 border border-red-500/20 p-3 rounded">
+                          <AlertCircle className="w-4 h-4 shrink-0" />
+                          <span>{billsError}</span>
+                        </div>
+                      )}
+
+                      <div>
+                        <h4 className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-500 mb-3">
+                          Outstanding Bills
+                        </h4>
+                        {billsLoading ? (
+                          <div className="py-10 text-center text-gray-500 text-xs flex flex-col items-center gap-2">
+                            <Loader2 className="w-5 h-5 animate-spin text-luxury-gold/50" />
+                            Loading...
+                          </div>
+                        ) : outstanding.length === 0 ? (
+                          <div className="py-10 text-center text-gray-500 text-xs flex flex-col items-center gap-2 bg-jet-black border border-gray-900 rounded-lg">
+                            <CreditCard className="w-8 h-8 text-luxury-gold/25" />
+                            You're all caught up — no outstanding bills right now.
+                          </div>
+                        ) : (
+                          <div className="space-y-3">
+                            {outstanding.map((bill) => (
+                              <div key={bill.id} className="bg-jet-black border border-gray-900 rounded-lg p-4">
+                                <div className="flex items-center justify-between gap-3">
+                                  <div className="min-w-0">
+                                    <span className="font-sans text-sm font-black text-white block truncate">{bill.label}</span>
+                                    <span className="font-mono text-xs text-luxury-gold">
+                                      {bill.currency} {bill.amount.toFixed(2)}
+                                    </span>
+                                  </div>
+                                  <button
+                                    onClick={() => handlePayBill(bill)}
+                                    disabled={payingBillId === bill.id}
+                                    className="px-4 py-2.5 rounded bg-gradient-to-r from-luxury-gold to-luxury-gold-dark text-black font-sans font-black tracking-widest text-[10px] uppercase transition-all shadow-[0_2px_10px_rgba(212,175,55,0.2)] disabled:opacity-50 flex items-center gap-1.5 cursor-pointer shrink-0"
+                                  >
+                                    {payingBillId === bill.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CreditCard className="w-3.5 h-3.5" />}
+                                    Pay
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      <div>
+                        <h4 className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-500 mb-3">
+                          Bill Payment History
+                        </h4>
+                        {paid.length === 0 ? (
+                          <div className="py-10 text-center text-gray-500 text-xs">No paid bills yet.</div>
+                        ) : (
+                          <div className="space-y-2">
+                            {paid.map((bill) => (
+                              <div key={bill.id} className="flex items-center justify-between bg-jet-black border border-gray-900 rounded p-3">
+                                <div className="min-w-0">
+                                  <span className="font-sans text-xs font-bold text-white block truncate">{bill.label}</span>
+                                  <span className="font-mono text-[10px] text-gray-500">
+                                    {bill.currency} {bill.amount.toFixed(2)}
+                                    {bill.channel && ` · ${formatChannel(bill.channel)}`}
+                                  </span>
+                                </div>
+                                <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded border shrink-0 ml-3 ${statusBadgeClass(bill.status)}`}>
+                                  {bill.status}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
             </div>
           )}
         </motion.div>
+
+        {/* RSVP Yes/No/Maybe popup for free events */}
+        {rsvpPopupEventId && (() => {
+          const rsvpEvent = events.find((ev) => ev.id === rsvpPopupEventId);
+          if (!rsvpEvent) return null;
+          return (
+            <div
+              className="fixed inset-0 z-[80] flex items-center justify-center p-4 bg-black/90 backdrop-blur-md"
+              onClick={() => setRsvpPopupEventId(null)}
+            >
+              <motion.div
+                initial={{ opacity: 0, y: 20, scale: 0.97 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                onClick={(e) => e.stopPropagation()}
+                className="bg-charcoal-card border border-luxury-gold/40 max-w-sm w-full rounded-lg p-6 relative shadow-[0_20px_50px_rgba(0,0,0,0.95)]"
+              >
+                <button
+                  onClick={() => setRsvpPopupEventId(null)}
+                  className="absolute top-3 right-3 text-gray-500 hover:text-white transition-colors cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+                <h3 className="font-display text-sm font-black text-luxury-gold uppercase tracking-widest mb-1">
+                  Confirm Attendance
+                </h3>
+                <p className="font-sans text-white text-sm font-bold mb-6 leading-snug">{rsvpEvent.title}</p>
+                <div className="grid grid-cols-1 gap-2.5">
+                  {(['yes', 'maybe', 'no'] as EventRsvpResponse[]).map((choice) => (
+                    <button
+                      key={choice}
+                      onClick={async () => {
+                        setRsvpPopupEventId(null);
+                        await rsvpForEvent(rsvpEvent.id, choice);
+                      }}
+                      className={`w-full py-3 rounded border font-sans font-black tracking-widest text-xs uppercase transition-colors cursor-pointer flex items-center justify-center gap-2 ${
+                        choice === 'yes' ? 'bg-green-950/20 border-green-900/40 hover:border-green-500/60 text-green-400'
+                        : choice === 'no' ? 'bg-red-950/20 border-red-900/40 hover:border-red-500/60 text-red-400'
+                        : 'bg-yellow-950/20 border-yellow-900/40 hover:border-yellow-500/60 text-yellow-400'
+                      }`}
+                    >
+                      {choice === 'yes' ? <CheckCircle2 className="w-4 h-4" /> : choice === 'no' ? <X className="w-4 h-4" /> : <Clock className="w-4 h-4" />}
+                      {RSVP_LABEL[choice]}
+                    </button>
+                  ))}
+                </div>
+              </motion.div>
+            </div>
+          );
+        })()}
       </div>
     </AnimatePresence>
   );

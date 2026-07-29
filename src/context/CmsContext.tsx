@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { Pillar, Leader, GalleryItem, Shoutout, Member, EliteEvent, HeroConfig, CmsUser } from '../types';
-import { fetchCmsData, updateCmsSection, resetCmsDatabase, CmsDatabase } from '../lib/cmsClient';
+import { fetchCmsData, updateCmsSection, resetCmsDatabase, saveCmsItem, deleteCmsItem, PerItemSection, CmsDatabase } from '../lib/cmsClient';
 import { PILLARS, LEADERSHIP, GALLERY_ITEMS, DEFAULT_SHOUTOUTS, DEFAULT_MEMBERS, DEFAULT_EVENTS, DEFAULT_HERO } from '../data';
 
 interface CmsContextType {
@@ -17,6 +17,10 @@ interface CmsContextType {
   refreshData: () => Promise<void>;
   updateSection: <K extends keyof CmsDatabase>(type: K, data: CmsDatabase[K]) => Promise<void>;
   resetToDefaults: () => Promise<void>;
+  // Save or delete a single Leader/GalleryItem/EliteEvent without resending
+  // the rest of that section's array — see cmsClient.ts's saveCmsItem for why.
+  saveItem: <K extends PerItemSection>(type: K, item: CmsDatabase[K][number]) => Promise<void>;
+  deleteItem: (type: PerItemSection, id: string) => Promise<void>;
 }
 
 const CmsContext = createContext<CmsContextType | undefined>(undefined);
@@ -81,6 +85,34 @@ export function CmsProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
+  const saveItem = async <K extends PerItemSection>(type: K, item: CmsDatabase[K][number]) => {
+    try {
+      setError(null);
+      const updated = await saveCmsItem(type, item);
+      if (type === 'leaders') setLeaders(updated as Leader[]);
+      else if (type === 'gallery') setGallery(updated as GalleryItem[]);
+      else if (type === 'events') setEvents(updated as EliteEvent[]);
+    } catch (err: any) {
+      console.error(`Failed to save ${type} item:`, err);
+      setError(err.message || `Failed to save ${type} item`);
+      throw err;
+    }
+  };
+
+  const deleteItem = async (type: PerItemSection, id: string) => {
+    try {
+      setError(null);
+      const updated = await deleteCmsItem(type, id);
+      if (type === 'leaders') setLeaders(updated as Leader[]);
+      else if (type === 'gallery') setGallery(updated as GalleryItem[]);
+      else if (type === 'events') setEvents(updated as EliteEvent[]);
+    } catch (err: any) {
+      console.error(`Failed to delete ${type} item:`, err);
+      setError(err.message || `Failed to delete ${type} item`);
+      throw err;
+    }
+  };
+
   const resetToDefaults = async () => {
     try {
       setError(null);
@@ -126,7 +158,9 @@ export function CmsProvider({ children }: { children: React.ReactNode }) {
         error,
         refreshData,
         updateSection,
-        resetToDefaults
+        resetToDefaults,
+        saveItem,
+        deleteItem
       }}
     >
       {children}

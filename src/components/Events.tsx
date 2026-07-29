@@ -1,20 +1,25 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
 import {
-  Calendar, MapPin, Clock, Crown, ArrowUpRight, Tag, CreditCard, CheckCircle2, AlertCircle, Loader2,
-  Images, ChevronLeft, ChevronRight, PlayCircle,
+  Calendar, MapPin, Clock, Crown, Tag, CreditCard, CheckCircle2, AlertCircle, Loader2,
+  Images, ChevronLeft, ChevronRight, PlayCircle, X,
 } from 'lucide-react';
 import { useCms } from '../context/CmsContext';
 import { useEventPayments } from '../hooks/useEventPayments';
+import { useEventRsvp } from '../hooks/useEventRsvp';
 import { usePaymentsConfig } from '../hooks/usePaymentsConfig';
-import { EliteEvent } from '../types';
+import { EliteEvent, EventRsvpResponse } from '../types';
+
+const RSVP_LABEL: Record<EventRsvpResponse, string> = { yes: 'Yes, Attending', no: 'Not Attending', maybe: 'Maybe' };
 
 export default function Events() {
   const { events } = useCms();
   const { paidEventIds, payingId, errorById, payForEvent } = useEventPayments();
+  const { rsvpByEventId, submittingId: rsvpSubmittingId, errorById: rsvpErrorById, rsvpForEvent } = useEventRsvp();
   const { mock: mockPayments } = usePaymentsConfig();
   const [galleryEvent, setGalleryEvent] = useState<EliteEvent | null>(null);
   const [activeMediaIndex, setActiveMediaIndex] = useState(0);
+  const [rsvpPopupEvent, setRsvpPopupEvent] = useState<EliteEvent | null>(null);
 
   // Stagger animation container
   const containerVariants = {
@@ -172,6 +177,12 @@ export default function Events() {
                       <span>{errorById[event.id]}</span>
                     </div>
                   )}
+                  {rsvpErrorById[event.id] && (
+                    <div className="flex items-center gap-1.5 text-[10px] text-red-500 bg-red-500/10 border border-red-500/20 p-2 rounded">
+                      <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                      <span>{rsvpErrorById[event.id]}</span>
+                    </div>
+                  )}
 
                   {event.price && event.price > 0 ? (
                     paidEventIds.has(event.id) ? (
@@ -186,20 +197,36 @@ export default function Events() {
                         className="w-full py-3 rounded bg-gradient-to-r from-luxury-gold to-luxury-gold-dark text-black font-sans font-black tracking-widest text-xs uppercase transition-all duration-300 shadow-[0_4px_15px_rgba(212,175,55,0.2)] hover:shadow-[0_0_25px_rgba(212,175,55,0.4)] cursor-pointer flex items-center justify-center gap-2 disabled:opacity-60"
                       >
                         {payingId === event.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <CreditCard className="w-4 h-4" />}
-                        Pay &amp; Register — {event.currency || 'GHS'} {event.price.toFixed(2)}
+                        {event.payButtonText || 'Make Payments'} — {event.currency || 'GHS'} {event.price.toFixed(2)}
                       </button>
                     )
-                  ) : event.buttonLink ? (
-                    <a
-                      href={event.buttonLink}
-                      target={event.buttonLink.startsWith('#') ? undefined : '_blank'}
-                      rel={event.buttonLink.startsWith('#') ? undefined : 'noopener noreferrer'}
-                      className="w-full py-3 rounded bg-charcoal-card border border-gray-800 hover:border-luxury-gold text-white hover:text-luxury-gold font-sans font-black tracking-widest text-xs uppercase transition-all duration-300 cursor-pointer flex items-center justify-center gap-2"
+                  ) : rsvpByEventId[event.id] ? (
+                    <div className="flex items-center gap-2">
+                      <div className={`flex-1 py-3 rounded border font-sans font-black tracking-widest text-xs uppercase flex items-center justify-center gap-2 ${
+                        rsvpByEventId[event.id] === 'yes' ? 'bg-green-950/20 border-green-900/40 text-green-400'
+                        : rsvpByEventId[event.id] === 'no' ? 'bg-red-950/20 border-red-900/40 text-red-400'
+                        : 'bg-yellow-950/20 border-yellow-900/40 text-yellow-400'
+                      }`}>
+                        <CheckCircle2 className="w-4 h-4" />
+                        {RSVP_LABEL[rsvpByEventId[event.id]]}
+                      </div>
+                      <button
+                        onClick={() => setRsvpPopupEvent(event)}
+                        className="shrink-0 px-3 py-3 rounded border border-gray-800 hover:border-luxury-gold/50 text-gray-400 hover:text-luxury-gold text-[10px] font-sans font-black uppercase tracking-widest transition-colors cursor-pointer"
+                      >
+                        Change
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => setRsvpPopupEvent(event)}
+                      disabled={rsvpSubmittingId === event.id}
+                      className="w-full py-3 rounded bg-gradient-to-r from-luxury-gold to-luxury-gold-dark text-black font-sans font-black tracking-widest text-xs uppercase transition-all duration-300 shadow-[0_4px_15px_rgba(212,175,55,0.2)] hover:shadow-[0_0_25px_rgba(212,175,55,0.4)] cursor-pointer flex items-center justify-center gap-2 disabled:opacity-60"
                     >
-                      {event.buttonText || 'Register'}
-                      <ArrowUpRight className="w-3.5 h-3.5" />
-                    </a>
-                  ) : null}
+                      {rsvpSubmittingId === event.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+                      Confirm Attendance
+                    </button>
+                  )}
                 </div>
 
               </motion.div>
@@ -313,6 +340,55 @@ export default function Events() {
           </div>
         );
       })()}
+
+      {/* RSVP Yes/No/Maybe popup for free events */}
+      {rsvpPopupEvent && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/90 backdrop-blur-md"
+          onClick={() => setRsvpPopupEvent(null)}
+        >
+          <motion.div
+            initial={{ opacity: 0, y: 20, scale: 0.97 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            onClick={(e) => e.stopPropagation()}
+            className="bg-charcoal-card border border-luxury-gold/40 max-w-sm w-full rounded-lg p-6 relative shadow-[0_20px_50px_rgba(0,0,0,0.95)]"
+          >
+            <button
+              onClick={() => setRsvpPopupEvent(null)}
+              className="absolute top-3 right-3 text-gray-500 hover:text-white transition-colors cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            <h3 className="font-display text-sm font-black text-luxury-gold uppercase tracking-widest mb-1">
+              Confirm Attendance
+            </h3>
+            <p className="font-sans text-white text-sm font-bold mb-6 leading-snug">{rsvpPopupEvent.title}</p>
+            <div className="grid grid-cols-1 gap-2.5">
+              <button
+                onClick={async () => { const ev = rsvpPopupEvent; setRsvpPopupEvent(null); if (ev) await rsvpForEvent(ev.id, 'yes'); }}
+                className="w-full py-3 rounded bg-green-950/20 border border-green-900/40 hover:border-green-500/60 text-green-400 font-sans font-black tracking-widest text-xs uppercase transition-colors cursor-pointer flex items-center justify-center gap-2"
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                Yes, Attending
+              </button>
+              <button
+                onClick={async () => { const ev = rsvpPopupEvent; setRsvpPopupEvent(null); if (ev) await rsvpForEvent(ev.id, 'maybe'); }}
+                className="w-full py-3 rounded bg-yellow-950/20 border border-yellow-900/40 hover:border-yellow-500/60 text-yellow-400 font-sans font-black tracking-widest text-xs uppercase transition-colors cursor-pointer flex items-center justify-center gap-2"
+              >
+                <Clock className="w-4 h-4" />
+                Maybe
+              </button>
+              <button
+                onClick={async () => { const ev = rsvpPopupEvent; setRsvpPopupEvent(null); if (ev) await rsvpForEvent(ev.id, 'no'); }}
+                className="w-full py-3 rounded bg-red-950/20 border border-red-900/40 hover:border-red-500/60 text-red-400 font-sans font-black tracking-widest text-xs uppercase transition-colors cursor-pointer flex items-center justify-center gap-2"
+              >
+                <X className="w-4 h-4" />
+                Not Attending
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
     </section>
   );
 }

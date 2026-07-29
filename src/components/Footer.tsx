@@ -1,9 +1,28 @@
 import React from 'react';
-import { Twitter, Instagram, Facebook, Youtube, Flame, MessageCircle, ArrowUp, ShieldCheck } from 'lucide-react';
+import { Instagram, Flame, ArrowUp, ShieldCheck } from 'lucide-react';
 import { useCms } from '../context/CmsContext';
 
 interface FooterProps {
   onOpenAdmin: () => void;
+}
+
+// TikTok and Snapchat aren't in lucide-react's icon set, so these are small
+// hand-drawn solid-fill glyphs (same 24x24 viewBox convention as lucide)
+// rather than a dependency on a brand-icon package.
+function TikTokIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden="true">
+      <path d="M16.5 2h-3v13.5a3.5 3.5 0 1 1-3.5-3.5c.35 0 .68.05 1 .14V8.9a6.5 6.5 0 1 0 5.5 6.43V8.5a7.5 7.5 0 0 0 4.5 1.5V6.8a4.5 4.5 0 0 1-4.5-4.5V2Z" />
+    </svg>
+  );
+}
+
+function SnapchatIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden="true">
+      <path d="M12 2c-3.04 0-5.5 2.24-5.5 5.5v2.19c0 .3-.16.57-.42.7l-2.1 1.06c-.3.15-.3.58 0 .73.9.46 2.02.9 2.02.9-.06.36-.4 1.02-1.1 1.4-.27.15-.2.55.1.6.46.08.9.24 1.02.58.1.28-.02.7.32.86.5.24 1.1-.02 1.66.24.5.24.86.9 1.72 1.06.9.17 1.66-.44 2.28-.44s1.38.6 2.28.44c.86-.16 1.22-.82 1.72-1.06.56-.26 1.16 0 1.66-.24.34-.16.22-.58.32-.86.12-.34.56-.5 1.02-.58.3-.05.37-.45.1-.6-.7-.38-1.04-1.04-1.1-1.4 0 0 1.12-.44 2.02-.9.3-.15.3-.58 0-.73l-2.1-1.06a.79.79 0 0 1-.42-.7V7.5C17.5 4.24 15.04 2 12 2Z" />
+    </svg>
+  );
 }
 
 export default function Footer({ onOpenAdmin }: FooterProps) {
@@ -93,11 +112,9 @@ export default function Footer({ onOpenAdmin }: FooterProps) {
             </p>
             <div className="flex flex-wrap gap-3.5">
               {[
-                { icon: <Twitter className="w-5 h-5" />, label: 'Twitter', href: 'https://twitter.com' },
-                { icon: <Instagram className="w-5 h-5" />, label: 'Instagram', href: 'https://instagram.com' },
-                { icon: <Facebook className="w-5 h-5" />, label: 'Facebook', href: 'https://facebook.com' },
-                { icon: <Youtube className="w-5 h-5" />, label: 'YouTube', href: 'https://youtube.com' },
-                { icon: <MessageCircle className="w-5 h-5" />, label: 'WhatsApp', href: 'https://wa.me/233500000000' }
+                { icon: <TikTokIcon className="w-5 h-5" />, label: 'TikTok', href: 'https://www.tiktok.com/@deelitesfamily.gh?_r=1&_t=ZS-98OKrFWwSGr' },
+                { icon: <SnapchatIcon className="w-5 h-5" />, label: 'Snapchat', href: 'https://www.snapchat.com/@deelitesfamily?invite_id=3cFCR519&locale=en_GH&share_id=-umI7VnpQtCwtYAcbLkbqg&sid=16865f670d514aadbde527911b436d56' },
+                { icon: <Instagram className="w-5 h-5" />, label: 'Instagram', href: 'https://www.instagram.com/deelitesfamily.gh?utm_source=qr' },
               ].map((social, index) => (
                 <a
                   key={index}

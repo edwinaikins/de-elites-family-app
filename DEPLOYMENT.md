@@ -229,10 +229,17 @@ The CMS's **Legacy Gallery** tab (Staff Login → Legacy Gallery) has a drag &
 drop zone above the milestone list — select or drop multiple event photos
 and videos at once (up to 150MB each) and it creates one draft gallery entry
 per file, defaulted to the "Events" category. Review/edit the title,
-category, date, and description for each, then click **Save All gallery**
-to publish them to the public Legacy Gallery section on the homepage.
-Videos play inline in both the grid and the spotlight modal; photos work
-exactly as before.
+category, date, and description for each, then click that item's own
+**Save This Milestone** button to publish it to the public Legacy Gallery
+section on the homepage — Leadership, Legacy Gallery, and Upcoming Events
+all save per-item now rather than needing one "Save All" for the whole
+section. Videos play inline in both the grid and the spotlight modal;
+photos work exactly as before.
+
+Categories aren't a fixed list either — type any label into an item's
+"Category Tag" field (a dropdown of categories already in use appears as
+you type) and it becomes its own filter button on the public gallery once
+saved.
 
 Unlike other CMS images (which are small Base64 strings stored directly in
 the database), uploaded gallery media is written to disk on the VM and

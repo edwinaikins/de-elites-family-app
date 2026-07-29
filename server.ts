@@ -307,6 +307,55 @@ async function initDb() {
       );
     `);
 
+    // Executive dues — a second, separate recurring monthly charge that only
+    // members flagged as executives owe, billed ON TOP OF (not instead of)
+    // their regular welfare dues. Identical shape to welfare_dues_payments
+    // (period-based, partial/installment payments allowed) so it reuses the
+    // exact same balance/payment logic, just against its own table and its
+    // own per-member executive_dues_amount (see the member_accounts
+    // migration below — 0 means "not an executive, nothing owed").
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS executive_dues_payments (
+        id TEXT PRIMARY KEY,
+        member_id TEXT NOT NULL REFERENCES member_accounts(id) ON DELETE CASCADE,
+        amount NUMERIC NOT NULL,
+        currency TEXT NOT NULL,
+        period TEXT NOT NULL,
+        reference TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL DEFAULT 'pending',
+        channel TEXT,
+        paid_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+    `);
+
+    // One-off bills — a single non-recurring charge an admin creates for a
+    // member (or several members at once), e.g. an anniversary levy or a
+    // one-time fine. Unlike dues/events, the row is created by the ADMIN
+    // before any payment attempt exists, so `reference` starts out NULL and
+    // only gets set the moment the member actually starts a checkout (see
+    // /api/payments/bill/initialize) — same "nullable until used" shape as
+    // member_accounts.username elsewhere in this file, and for the same
+    // reason (a partial unique index still enforces no two live payment
+    // attempts share a reference, while letting many bills sit with none).
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS member_bills (
+        id TEXT PRIMARY KEY,
+        member_id TEXT NOT NULL REFERENCES member_accounts(id) ON DELETE CASCADE,
+        label TEXT NOT NULL,
+        amount NUMERIC NOT NULL,
+        currency TEXT NOT NULL,
+        reference TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        channel TEXT,
+        paid_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+    `);
+    await db.query(
+      `CREATE UNIQUE INDEX IF NOT EXISTS member_bills_reference_unique ON member_bills (reference) WHERE reference IS NOT NULL;`
+    );
+
     // Migration: record which channel (card, mobile_money, bank, ...) a
     // payment cleared through, for reconciliation. Added after the tables
     // above already existed in production, hence ALTER TABLE ... ADD COLUMN
@@ -329,6 +378,32 @@ async function initDb() {
     await db.query(`ALTER TABLE member_accounts ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT false;`);
     await db.query(
       `CREATE UNIQUE INDEX IF NOT EXISTS member_accounts_username_unique ON member_accounts (username) WHERE username IS NOT NULL;`
+    );
+
+    // Migration: Executive Dues — 0 (the default) means this member owes no
+    // executive dues at all, i.e. isn't an executive; any positive amount
+    // both flags them as one and sets what they owe each period, mirroring
+    // how dues_amount = 0 already means "no welfare dues configured" above.
+    await db.query(`ALTER TABLE member_accounts ADD COLUMN IF NOT EXISTS executive_dues_amount NUMERIC NOT NULL DEFAULT 0;`);
+
+    // RSVPs for free (no-payment) events. `event_id` references an id inside
+    // the `events` cms_sections JSONB blob rather than a real foreign key —
+    // events aren't a normal table, so there's nothing to FK against. One
+    // row per member+event (upserted on re-submit, so a member can change
+    // their mind from Maybe to Yes etc. without piling up duplicate rows).
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS event_rsvps (
+        id TEXT PRIMARY KEY,
+        member_id TEXT NOT NULL REFERENCES member_accounts(id) ON DELETE CASCADE,
+        event_id TEXT NOT NULL,
+        event_title TEXT NOT NULL,
+        response TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+    `);
+    await db.query(
+      `CREATE UNIQUE INDEX IF NOT EXISTS event_rsvps_member_event_unique ON event_rsvps (member_id, event_id);`
     );
 
     for (const sec of SECTIONS) {
@@ -449,6 +524,79 @@ app.post("/api/cms/reset", async (req, res) => {
   } catch (error: any) {
     console.error("Failed to reset CMS data:", error);
     res.status(500).json({ success: false, error: error.message || "Failed to reset database." });
+  }
+});
+
+// --- Per-item CMS saves (Leadership, Legacy Gallery, Upcoming Events) ---
+//
+// The sections above (via /api/cms/update) are edited and saved as one
+// whole array — fine for small sections, but Leaders/Gallery/Events can
+// each carry several embedded Base64 photos, and resending the *entire*
+// array just to change one card is both slow and the exact shape of
+// request that triggered the old "Request Entity Too Large" bug. These
+// routes let the CMS create/update/delete a single item by `id`, reading
+// and rewriting the section's JSONB array server-side so the wire payload
+// from the browser only ever carries the one item being touched.
+const PER_ITEM_SECTIONS = ["leaders", "gallery", "events"];
+
+async function readSectionItems(section: string): Promise<any[]> {
+  const db = getPool();
+  const result = await db.query("SELECT items FROM cms_sections WHERE section = $1", [section]);
+  return result.rowCount === 0 ? getDefaultDataForSection(section) : result.rows[0].items;
+}
+
+async function writeSectionItems(section: string, items: any[]): Promise<void> {
+  const db = getPool();
+  await db.query(
+    `INSERT INTO cms_sections (section, items, updated_at)
+     VALUES ($1, $2::jsonb, now())
+     ON CONFLICT (section) DO UPDATE SET items = EXCLUDED.items, updated_at = now()`,
+    [section, JSON.stringify(items)]
+  );
+}
+
+// Create-or-update a single item (upsert by `id`) within a per-item-capable
+// section. Returns the full updated array so the client can just replace
+// its local copy of that section.
+app.post("/api/cms/:section/item", async (req, res) => {
+  try {
+    const { section } = req.params;
+    if (!PER_ITEM_SECTIONS.includes(section)) {
+      return res.status(400).json({ success: false, error: `Per-item save isn't supported for '${section}'.` });
+    }
+    const item = req.body;
+    if (!item || typeof item !== "object" || !item.id) {
+      return res.status(400).json({ success: false, error: "A valid item with an 'id' is required." });
+    }
+
+    const items = await readSectionItems(section);
+    const idx = items.findIndex((it: any) => it.id === item.id);
+    const updated = idx >= 0 ? items.map((it: any, i: number) => (i === idx ? item : it)) : [item, ...items];
+    await writeSectionItems(section, updated);
+
+    res.json({ success: true, data: updated });
+  } catch (error: any) {
+    console.error(`Failed to save item in section '${req.params.section}':`, error);
+    res.status(500).json({ success: false, error: error.message || "Failed to save item." });
+  }
+});
+
+// Delete a single item by id from a per-item-capable section.
+app.delete("/api/cms/:section/item/:id", async (req, res) => {
+  try {
+    const { section, id } = req.params;
+    if (!PER_ITEM_SECTIONS.includes(section)) {
+      return res.status(400).json({ success: false, error: `Per-item delete isn't supported for '${section}'.` });
+    }
+
+    const items = await readSectionItems(section);
+    const updated = items.filter((it: any) => it.id !== id);
+    await writeSectionItems(section, updated);
+
+    res.json({ success: true, data: updated });
+  } catch (error: any) {
+    console.error(`Failed to delete item from section '${req.params.section}':`, error);
+    res.status(500).json({ success: false, error: error.message || "Failed to delete item." });
   }
 });
 
@@ -637,6 +785,7 @@ function mapMemberRow(row: any) {
     role: row.role || undefined,
     phone: row.phone || undefined,
     duesAmount: Number(row.dues_amount),
+    executiveDuesAmount: Number(row.executive_dues_amount || 0),
     currency: row.currency,
     status: row.status,
     mustChangePassword: row.must_change_password === true,
@@ -672,6 +821,33 @@ function mapEventPaymentRow(row: any) {
     channel: row.channel || undefined,
     paidAt: row.paid_at || undefined,
     createdAt: row.created_at,
+  };
+}
+
+function mapBillRow(row: any) {
+  return {
+    id: row.id,
+    memberId: row.member_id,
+    label: row.label,
+    amount: Number(row.amount),
+    currency: row.currency,
+    reference: row.reference || undefined,
+    status: row.status,
+    channel: row.channel || undefined,
+    paidAt: row.paid_at || undefined,
+    createdAt: row.created_at,
+  };
+}
+
+function mapRsvpRow(row: any) {
+  return {
+    id: row.id,
+    memberId: row.member_id,
+    eventId: row.event_id,
+    eventTitle: row.event_title,
+    response: row.response,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
   };
 }
 
@@ -791,6 +967,61 @@ app.get("/api/member/event-payments", requireMemberAuth, async (req: any, res) =
   }
 });
 
+// A member's one-off bills — both still-unpaid ones (to show "you owe...")
+// and their full history of past ones, newest first either way.
+app.get("/api/member/bills", requireMemberAuth, async (req: any, res) => {
+  try {
+    const db = getPool();
+    const result = await db.query("SELECT * FROM member_bills WHERE member_id = $1 ORDER BY created_at DESC", [req.memberId]);
+    res.json({ success: true, data: result.rows.map(mapBillRow) });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message || "Failed to load bills." });
+  }
+});
+
+// --- Event RSVPs (free events only — paid events use the payment flow
+// above as the registration signal instead) ---
+
+// Every RSVP this member has ever submitted, so the UI can show "You said
+// Yes" against each event without a separate per-event lookup.
+app.get("/api/member/rsvps", requireMemberAuth, async (req: any, res) => {
+  try {
+    const db = getPool();
+    const result = await db.query("SELECT * FROM event_rsvps WHERE member_id = $1 ORDER BY updated_at DESC", [req.memberId]);
+    res.json({ success: true, data: result.rows.map(mapRsvpRow) });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message || "Failed to load RSVPs." });
+  }
+});
+
+// Submit or change this member's RSVP for one event. Upserted on
+// (member_id, event_id) so re-submitting (e.g. Maybe -> Yes) just updates
+// the same row instead of piling up duplicates.
+app.post("/api/events/:eventId/rsvp", requireMemberAuth, async (req: any, res) => {
+  try {
+    const { eventId } = req.params;
+    const { response } = req.body || {};
+    if (!["yes", "no", "maybe"].includes(response)) {
+      return res.status(400).json({ success: false, error: "Response must be one of yes, no, maybe." });
+    }
+    const event = await getEventById(eventId);
+    if (!event) return res.status(404).json({ success: false, error: "Event not found." });
+    const db = getPool();
+    const result = await db.query(
+      `INSERT INTO event_rsvps (id, member_id, event_id, event_title, response)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (member_id, event_id)
+       DO UPDATE SET response = $5, event_title = $4, updated_at = now()
+       RETURNING *`,
+      [`rsvp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, req.memberId, eventId, event.title, response]
+    );
+    res.json({ success: true, data: mapRsvpRow(result.rows[0]) });
+  } catch (error: any) {
+    console.error("Failed to submit RSVP:", error);
+    res.status(500).json({ success: false, error: error.message || "Failed to submit RSVP." });
+  }
+});
+
 // --- Admin: manage member accounts ---
 // NOTE: same posture as the rest of this CMS's admin routes — the CMS login
 // gate is client-side only, not server-side authenticated yet.
@@ -834,8 +1065,8 @@ app.post("/api/admin/members", async (req, res) => {
     const passwordHash = await bcrypt.hash(String(b.password), 10);
     const id = `member-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const result = await db.query(
-      `INSERT INTO member_accounts (id, full_name, username, email, password_hash, bio, image, chapter, role, phone, dues_amount, currency, status, must_change_password)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'active',true) RETURNING *`,
+      `INSERT INTO member_accounts (id, full_name, username, email, password_hash, bio, image, chapter, role, phone, dues_amount, executive_dues_amount, currency, status, must_change_password)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'active',true) RETURNING *`,
       [
         id,
         String(b.fullName).trim(),
@@ -848,6 +1079,7 @@ app.post("/api/admin/members", async (req, res) => {
         b.role || null,
         b.phone || null,
         Number(b.duesAmount) || 0,
+        Number(b.executiveDuesAmount) || 0,
         b.currency || getDuesCurrency(),
       ]
     );
@@ -896,7 +1128,8 @@ app.patch("/api/admin/members/:id", async (req, res) => {
         role = COALESCE($4, role),
         dues_amount = COALESCE($5, dues_amount),
         currency = COALESCE($6, currency),
-        status = COALESCE($7, status)
+        status = COALESCE($7, status),
+        executive_dues_amount = COALESCE($8, executive_dues_amount)
        WHERE id = $1 RETURNING *`,
       [
         id,
@@ -906,6 +1139,7 @@ app.patch("/api/admin/members/:id", async (req, res) => {
         b.duesAmount !== undefined ? Number(b.duesAmount) : null,
         typeof b.currency === "string" ? b.currency : null,
         typeof b.status === "string" ? b.status : null,
+        b.executiveDuesAmount !== undefined ? Number(b.executiveDuesAmount) : null,
       ]
     );
     if (result.rowCount === 0) return res.status(404).json({ success: false, error: "Member account not found." });
@@ -950,6 +1184,53 @@ app.get("/api/admin/members/:id/event-payments", async (req, res) => {
   }
 });
 
+app.get("/api/admin/members/:id/executive-dues", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const db = getPool();
+    const result = await db.query("SELECT * FROM executive_dues_payments WHERE member_id = $1 ORDER BY created_at DESC", [id]);
+    res.json({ success: true, data: result.rows.map(mapDuesRow) });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message || "Failed to load executive dues history." });
+  }
+});
+
+app.get("/api/admin/members/:id/bills", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const db = getPool();
+    const result = await db.query("SELECT * FROM member_bills WHERE member_id = $1 ORDER BY created_at DESC", [id]);
+    res.json({ success: true, data: result.rows.map(mapBillRow) });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message || "Failed to load bills." });
+  }
+});
+
+// Who RSVP'd Yes/No/Maybe for a given event, joined with each member's name
+// + email so the CMS can show a readable attendee list rather than raw ids.
+app.get("/api/admin/events/:eventId/rsvps", async (req, res) => {
+  try {
+    const { eventId } = req.params;
+    const db = getPool();
+    const result = await db.query(
+      `SELECT r.*, m.full_name, m.email
+       FROM event_rsvps r
+       JOIN member_accounts m ON m.id = r.member_id
+       WHERE r.event_id = $1
+       ORDER BY r.updated_at DESC`,
+      [eventId]
+    );
+    const data = result.rows.map((row) => ({
+      ...mapRsvpRow(row),
+      memberName: row.full_name,
+      memberEmail: row.email,
+    }));
+    res.json({ success: true, data });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message || "Failed to load RSVPs." });
+  }
+});
+
 function mapAdminPaymentRow(row: any) {
   return {
     id: row.id,
@@ -968,10 +1249,11 @@ function mapAdminPaymentRow(row: any) {
   };
 }
 
-// Reconciliation: every dues + event payment across every member, joined
-// with the member's name/email, newest first — the "who paid what" view
-// the CMS Payments tab renders. Combines both payment tables with a UNION
-// ALL rather than two round-trips so sorting/paging stays consistent.
+// Reconciliation: every dues + event + executive dues + one-off bill across
+// every member, joined with the member's name/email, newest first — the
+// "who paid what" view the CMS Payments tab renders. Combines all four
+// payment tables with a UNION ALL rather than four round-trips so
+// sorting/paging stays consistent.
 app.get("/api/admin/payments", async (req, res) => {
   try {
     const db = getPool();
@@ -987,12 +1269,117 @@ app.get("/api/admin/payments", async (req, res) => {
              ep.reference, ep.status, ep.paid_at, ep.created_at
       FROM event_payments ep
       JOIN member_accounts ma ON ma.id = ep.member_id
+      UNION ALL
+      SELECT xd.id, xd.member_id, ma.full_name, ma.email, 'executive-dues' AS type,
+             xd.period AS label, xd.amount, xd.currency, xd.channel,
+             xd.reference, xd.status, xd.paid_at, xd.created_at
+      FROM executive_dues_payments xd
+      JOIN member_accounts ma ON ma.id = xd.member_id
+      UNION ALL
+      SELECT mb.id, mb.member_id, ma.full_name, ma.email, 'bill' AS type,
+             mb.label AS label, mb.amount, mb.currency, mb.channel,
+             mb.reference, mb.status, mb.paid_at, mb.created_at
+      FROM member_bills mb
+      JOIN member_accounts ma ON ma.id = mb.member_id
       ORDER BY created_at DESC
     `);
     res.json({ success: true, data: result.rows.map(mapAdminPaymentRow) });
   } catch (error: any) {
     console.error("Failed to load admin payments:", error);
     res.status(500).json({ success: false, error: error.message || "Failed to load payments." });
+  }
+});
+
+// Create one or more one-off bills at once — pass a single-element
+// memberIds array to bill one person, or several/all member ids to bill a
+// group with the same label/amount in one action (each still gets its own
+// independent row, so one person's payment/deletion never touches another's).
+app.post("/api/admin/bills", async (req, res) => {
+  try {
+    const b = req.body || {};
+    const memberIds: string[] = Array.isArray(b.memberIds) ? b.memberIds.filter((x: any) => typeof x === "string" && x) : [];
+    if (memberIds.length === 0) {
+      return res.status(400).json({ success: false, error: "At least one recipient is required." });
+    }
+    const label = typeof b.label === "string" ? b.label.trim() : "";
+    if (!label) {
+      return res.status(400).json({ success: false, error: "A bill label/description is required." });
+    }
+    const amount = Number(b.amount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return res.status(400).json({ success: false, error: "Enter a valid amount greater than zero." });
+    }
+
+    const db = getPool();
+    const membersRes = await db.query("SELECT id, currency FROM member_accounts WHERE id = ANY($1::text[])", [memberIds]);
+    if (membersRes.rowCount !== memberIds.length) {
+      return res.status(404).json({ success: false, error: "One or more selected members could not be found." });
+    }
+
+    const created: any[] = [];
+    for (const member of membersRes.rows) {
+      const currency = typeof b.currency === "string" && b.currency.trim() ? b.currency.trim().toUpperCase() : member.currency;
+      const id = `bill-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const result = await db.query(
+        `INSERT INTO member_bills (id, member_id, label, amount, currency, status)
+         VALUES ($1,$2,$3,$4,$5,'pending') RETURNING *`,
+        [id, member.id, label, amount, currency]
+      );
+      created.push(result.rows[0]);
+    }
+
+    res.json({ success: true, data: created.map(mapBillRow) });
+  } catch (error: any) {
+    console.error("Failed to create bill(s):", error);
+    res.status(500).json({ success: false, error: error.message || "Failed to create bill." });
+  }
+});
+
+// Edit a still-pending bill's details, or mark it paid manually (a payment
+// collected outside Paystack — cash, bank transfer, etc.).
+app.patch("/api/admin/bills/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const b = req.body || {};
+    const db = getPool();
+
+    if (b.markPaidChannel) {
+      const channel = String(b.markPaidChannel).trim() || "cash";
+      const result = await db.query(
+        `UPDATE member_bills SET status = 'success', paid_at = now(), channel = $2,
+           reference = COALESCE(reference, $3)
+         WHERE id = $1 RETURNING *`,
+        [id, channel, `manual-bill-${id}-${Date.now()}`]
+      );
+      if (result.rowCount === 0) return res.status(404).json({ success: false, error: "Bill not found." });
+      return res.json({ success: true, data: mapBillRow(result.rows[0]) });
+    }
+
+    const result = await db.query(
+      `UPDATE member_bills SET
+        label = COALESCE($2, label),
+        amount = COALESCE($3, amount)
+       WHERE id = $1 RETURNING *`,
+      [id, typeof b.label === "string" && b.label.trim() ? b.label.trim() : null, b.amount !== undefined ? Number(b.amount) : null]
+    );
+    if (result.rowCount === 0) return res.status(404).json({ success: false, error: "Bill not found." });
+    res.json({ success: true, data: mapBillRow(result.rows[0]) });
+  } catch (error: any) {
+    console.error("Failed to update bill:", error);
+    res.status(500).json({ success: false, error: error.message || "Failed to update bill." });
+  }
+});
+
+app.delete("/api/admin/bills/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const db = getPool();
+    const result = await db.query("DELETE FROM member_bills WHERE id = $1", [id]);
+    if (result.rowCount === 0) return res.status(404).json({ success: false, error: "Bill not found." });
+    res.json({ success: true });
+  } catch (error: any) {
+    console.error("Failed to delete bill:", error);
+    res.status(500).json({ success: false, error: error.message || "Failed to delete bill." });
   }
 });
 
@@ -1005,9 +1392,9 @@ app.get("/api/admin/payments", async (req, res) => {
 app.post("/api/admin/payments", async (req, res) => {
   try {
     const b = req.body || {};
-    const type = b.type === "event" ? "event" : b.type === "dues" ? "dues" : null;
+    const type = ["event", "dues", "executive-dues"].includes(b.type) ? b.type : null;
     if (!type) {
-      return res.status(400).json({ success: false, error: "type must be 'dues' or 'event'." });
+      return res.status(400).json({ success: false, error: "type must be 'dues', 'executive-dues', or 'event'." });
     }
     const memberId = typeof b.memberId === "string" ? b.memberId : "";
     if (!memberId) {
@@ -1028,20 +1415,23 @@ app.post("/api/admin/payments", async (req, res) => {
     const channel = typeof b.channel === "string" && b.channel.trim() ? b.channel.trim() : "cash";
 
     let row: any;
-    if (type === "dues") {
+    if (type === "dues" || type === "executive-dues") {
       const period = typeof b.period === "string" ? b.period.trim() : "";
       if (!period) {
         return res.status(400).json({ success: false, error: "A dues period (e.g. '2026-08') is required." });
       }
-      const id = `dp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const reference = `manual-dues-${memberId}-${period}-${Date.now()}`;
+      const table = type === "dues" ? "welfare_dues_payments" : "executive_dues_payments";
+      const idPrefix = type === "dues" ? "dp" : "edp";
+      const referencePrefix = type === "dues" ? "manual-dues" : "manual-exec-dues";
+      const id = `${idPrefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const reference = `${referencePrefix}-${memberId}-${period}-${Date.now()}`;
       const result = await db.query(
-        `INSERT INTO welfare_dues_payments (id, member_id, amount, currency, period, reference, status, channel, paid_at)
+        `INSERT INTO ${table} (id, member_id, amount, currency, period, reference, status, channel, paid_at)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8, CASE WHEN $7 = 'success' THEN now() ELSE NULL END)
          RETURNING *`,
         [id, memberId, amount, currency, period, reference, status, channel]
       );
-      row = { ...result.rows[0], full_name: member.full_name, email: member.email, type: "dues", label: result.rows[0].period };
+      row = { ...result.rows[0], full_name: member.full_name, email: member.email, type, label: result.rows[0].period };
     } else {
       let eventTitle = typeof b.eventTitle === "string" ? b.eventTitle.trim() : "";
       const eventId = typeof b.eventId === "string" ? b.eventId.trim() : "";
@@ -1070,13 +1460,20 @@ app.post("/api/admin/payments", async (req, res) => {
   }
 });
 
+const PAYMENT_TYPE_TABLES: Record<string, string> = {
+  dues: "welfare_dues_payments",
+  event: "event_payments",
+  "executive-dues": "executive_dues_payments",
+  bill: "member_bills",
+};
+
 app.delete("/api/admin/payments/:type/:id", async (req, res) => {
   try {
     const { type, id } = req.params;
-    if (type !== "dues" && type !== "event") {
-      return res.status(400).json({ success: false, error: "type must be 'dues' or 'event'." });
+    const table = PAYMENT_TYPE_TABLES[type];
+    if (!table) {
+      return res.status(400).json({ success: false, error: "type must be 'dues', 'executive-dues', 'event', or 'bill'." });
     }
-    const table = type === "dues" ? "welfare_dues_payments" : "event_payments";
     const db = getPool();
     const result = await db.query(`DELETE FROM ${table} WHERE id = $1`, [id]);
     if (result.rowCount === 0) return res.status(404).json({ success: false, error: "Payment record not found." });
@@ -1113,6 +1510,18 @@ async function getDuesPaidSoFar(memberId: string, period: string): Promise<numbe
   return Number(result.rows[0]?.paid || 0);
 }
 
+// Same as getDuesPaidSoFar but against executive_dues_payments — kept as a
+// separate function (rather than parameterizing the table name) since it's
+// the one place a raw identifier would otherwise get interpolated into SQL.
+async function getExecutiveDuesPaidSoFar(memberId: string, period: string): Promise<number> {
+  const db = getPool();
+  const result = await db.query(
+    `SELECT COALESCE(SUM(amount), 0) AS paid FROM executive_dues_payments WHERE member_id = $1 AND period = $2 AND status = 'success'`,
+    [memberId, period]
+  );
+  return Number(result.rows[0]?.paid || 0);
+}
+
 // Lets the client show a "Test Mode" badge on payment buttons before the
 // member even starts a checkout, rather than only discovering it's a mock
 // payment once the initialize call comes back.
@@ -1136,6 +1545,91 @@ app.get("/api/member/dues-balance/:period", requireMemberAuth, async (req: any, 
     res.json({ success: true, data: { period, duesAmount, paid, remaining, currency: member.currency } });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message || "Failed to load dues balance." });
+  }
+});
+
+// Executive dues — same "GHS 20 of GHS 50 paid" balance concept as regular
+// welfare dues, just against the member's separate executive_dues_amount
+// and its own payment table.
+app.get("/api/member/executive-dues-balance/:period", requireMemberAuth, async (req: any, res) => {
+  try {
+    const { period } = req.params;
+    const db = getPool();
+    const memberRes = await db.query("SELECT executive_dues_amount, currency FROM member_accounts WHERE id = $1", [req.memberId]);
+    const member = memberRes.rows[0];
+    if (!member) return res.status(404).json({ success: false, error: "Member not found." });
+    const duesAmount = Number(member.executive_dues_amount);
+    const paid = await getExecutiveDuesPaidSoFar(req.memberId, period);
+    const remaining = Math.max(0, Math.round((duesAmount - paid) * 100) / 100);
+    res.json({ success: true, data: { period, duesAmount, paid, remaining, currency: member.currency } });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message || "Failed to load executive dues balance." });
+  }
+});
+
+app.get("/api/member/executive-dues-history", requireMemberAuth, async (req: any, res) => {
+  try {
+    const db = getPool();
+    const result = await db.query(
+      "SELECT * FROM executive_dues_payments WHERE member_id = $1 ORDER BY created_at DESC",
+      [req.memberId]
+    );
+    res.json({ success: true, data: result.rows.map(mapDuesRow) });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message || "Failed to load executive dues history." });
+  }
+});
+
+app.post("/api/payments/executive-dues/initialize", requireMemberAuth, async (req: any, res) => {
+  try {
+    const { period, amount: requestedAmount } = req.body || {};
+    if (!period || typeof period !== "string") {
+      return res.status(400).json({ success: false, error: "A dues period (e.g. '2026-08') is required." });
+    }
+    const db = getPool();
+    const memberRes = await db.query("SELECT * FROM member_accounts WHERE id = $1", [req.memberId]);
+    const member = memberRes.rows[0];
+    if (!member) return res.status(404).json({ success: false, error: "Member not found." });
+    const duesAmount = Number(member.executive_dues_amount);
+    if (!duesAmount || duesAmount <= 0) {
+      return res.status(400).json({ success: false, error: "No executive dues amount has been configured for your account." });
+    }
+
+    const paidSoFar = await getExecutiveDuesPaidSoFar(req.memberId, period);
+    const remaining = Math.round((duesAmount - paidSoFar) * 100) / 100;
+    if (remaining <= 0) {
+      return res.status(400).json({ success: false, error: `You've already fully paid your executive dues for ${period}.` });
+    }
+
+    let amount = remaining;
+    if (requestedAmount !== undefined && requestedAmount !== null && requestedAmount !== "") {
+      const requested = Math.round(Number(requestedAmount) * 100) / 100;
+      if (!Number.isFinite(requested) || requested <= 0) {
+        return res.status(400).json({ success: false, error: "Enter a valid payment amount." });
+      }
+      if (requested > remaining + 0.01) {
+        return res.status(400).json({ success: false, error: `You only owe ${member.currency} ${remaining.toFixed(2)} for this period.` });
+      }
+      amount = requested;
+    }
+
+    const mock = isMockPaymentsEnabled();
+    const publicKey = mock ? "mock" : getPaystackPublicKey();
+    if (!mock && !publicKey) {
+      return res.status(503).json({ success: false, error: "Payments are not configured yet. Contact an admin." });
+    }
+
+    const reference = `${mock ? MOCK_REFERENCE_PREFIX : ""}exec-dues-${req.memberId}-${period}-${Date.now()}`;
+    await db.query(
+      `INSERT INTO executive_dues_payments (id, member_id, amount, currency, period, reference, status)
+       VALUES ($1,$2,$3,$4,$5,$6,'pending')`,
+      [`edp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, req.memberId, amount, member.currency, period, reference]
+    );
+
+    res.json({ success: true, data: { reference, amount, currency: member.currency, email: member.email, publicKey, mock } });
+  } catch (error: any) {
+    console.error("Failed to initialize executive dues payment:", error);
+    res.status(500).json({ success: false, error: error.message || "Failed to start payment." });
   }
 });
 
@@ -1235,12 +1729,59 @@ app.post("/api/payments/event/initialize", requireMemberAuth, async (req: any, r
   }
 });
 
+// A bill is created by an admin first (see POST /api/admin/bills) and only
+// gets a Paystack reference once the member actually starts paying it — so
+// unlike the dues/event initialize routes above, this one UPDATEs an
+// existing row instead of INSERTing a new one. Safe to call again on a
+// still-pending bill (e.g. the member abandoned an earlier checkout
+// attempt) since it just overwrites the reference with a fresh one.
+app.post("/api/payments/bill/initialize", requireMemberAuth, async (req: any, res) => {
+  try {
+    const { billId } = req.body || {};
+    if (!billId) {
+      return res.status(400).json({ success: false, error: "billId is required." });
+    }
+    const db = getPool();
+    const billRes = await db.query("SELECT * FROM member_bills WHERE id = $1 AND member_id = $2", [billId, req.memberId]);
+    const bill = billRes.rows[0];
+    if (!bill) return res.status(404).json({ success: false, error: "Bill not found." });
+    if (bill.status === "success") {
+      return res.status(400).json({ success: false, error: "This bill has already been paid." });
+    }
+
+    const memberRes = await db.query("SELECT email FROM member_accounts WHERE id = $1", [req.memberId]);
+    const member = memberRes.rows[0];
+    if (!member) return res.status(404).json({ success: false, error: "Member not found." });
+
+    const mock = isMockPaymentsEnabled();
+    const publicKey = mock ? "mock" : getPaystackPublicKey();
+    if (!mock && !publicKey) {
+      return res.status(503).json({ success: false, error: "Payments are not configured yet. Contact an admin." });
+    }
+
+    const reference = `${mock ? MOCK_REFERENCE_PREFIX : ""}bill-${req.memberId}-${billId}-${Date.now()}`;
+    await db.query("UPDATE member_bills SET reference = $2, status = 'pending' WHERE id = $1", [billId, reference]);
+
+    res.json({
+      success: true,
+      data: { reference, amount: Number(bill.amount), currency: bill.currency, email: member.email, publicKey, mock },
+    });
+  } catch (error: any) {
+    console.error("Failed to initialize bill payment:", error);
+    res.status(500).json({ success: false, error: error.message || "Failed to start payment." });
+  }
+});
+
 async function findPaymentByReference(reference: string) {
   const db = getPool();
   const duesRes = await db.query("SELECT * FROM welfare_dues_payments WHERE reference = $1", [reference]);
   if ((duesRes.rowCount ?? 0) > 0) return { table: "welfare_dues_payments" as const, row: duesRes.rows[0] };
   const eventRes = await db.query("SELECT * FROM event_payments WHERE reference = $1", [reference]);
   if ((eventRes.rowCount ?? 0) > 0) return { table: "event_payments" as const, row: eventRes.rows[0] };
+  const execDuesRes = await db.query("SELECT * FROM executive_dues_payments WHERE reference = $1", [reference]);
+  if ((execDuesRes.rowCount ?? 0) > 0) return { table: "executive_dues_payments" as const, row: execDuesRes.rows[0] };
+  const billRes = await db.query("SELECT * FROM member_bills WHERE reference = $1", [reference]);
+  if ((billRes.rowCount ?? 0) > 0) return { table: "member_bills" as const, row: billRes.rows[0] };
   return null;
 }
 
@@ -1310,6 +1851,15 @@ async function verifyAndRecordPayment(reference: string, expectedMemberId?: stri
   }
 }
 
+// Maps each payment table to the short `type` tag the client keys its UI
+// off of, and to the row-shape mapper for that table.
+const PAYMENT_TABLE_INFO = {
+  welfare_dues_payments: { type: "dues", mapper: mapDuesRow },
+  event_payments: { type: "event", mapper: mapEventPaymentRow },
+  executive_dues_payments: { type: "executive-dues", mapper: mapDuesRow },
+  member_bills: { type: "bill", mapper: mapBillRow },
+} as const;
+
 app.post("/api/payments/verify", requireMemberAuth, async (req: any, res) => {
   try {
     const { reference, channel } = req.body || {};
@@ -1318,8 +1868,8 @@ app.post("/api/payments/verify", requireMemberAuth, async (req: any, res) => {
     if (!result.success) {
       return res.status(400).json({ success: false, error: result.error });
     }
-    const data = result.table === "welfare_dues_payments" ? mapDuesRow(result.row) : mapEventPaymentRow(result.row);
-    res.json({ success: true, data, type: result.table === "welfare_dues_payments" ? "dues" : "event" });
+    const info = PAYMENT_TABLE_INFO[result.table];
+    res.json({ success: true, data: info.mapper(result.row), type: info.type });
   } catch (error: any) {
     console.error("Failed to verify payment:", error);
     res.status(500).json({ success: false, error: error.message || "Failed to verify payment." });

@@ -47,6 +47,38 @@ export async function updateCmsSection<K extends keyof CmsDatabase>(
   return result.data;
 }
 
+// --- Per-item CMS saves (Leadership, Legacy Gallery, Upcoming Events) ---
+// Saves/deletes a single item instead of resending the whole section array
+// — see server.ts's /api/cms/:section/item comment for why. Both return
+// the section's full updated array so the caller can replace its local copy.
+
+export type PerItemSection = 'leaders' | 'gallery' | 'events';
+
+export async function saveCmsItem<K extends PerItemSection>(
+  type: K,
+  item: CmsDatabase[K][number]
+): Promise<CmsDatabase[K]> {
+  const res = await fetch(`/api/cms/${type}/item`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(item),
+  });
+  const result = await res.json().catch(() => ({}));
+  if (!res.ok || !result.success) {
+    throw new Error(result.error || `Failed to save ${type} item`);
+  }
+  return result.data;
+}
+
+export async function deleteCmsItem<K extends PerItemSection>(type: K, id: string): Promise<CmsDatabase[K]> {
+  const res = await fetch(`/api/cms/${type}/item/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  const result = await res.json().catch(() => ({}));
+  if (!res.ok || !result.success) {
+    throw new Error(result.error || `Failed to delete ${type} item`);
+  }
+  return result.data;
+}
+
 export async function resetCmsDatabase(database: CmsDatabase): Promise<void> {
   const res = await fetch("/api/cms/reset", {
     method: "POST",
