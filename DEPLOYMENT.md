@@ -263,15 +263,83 @@ actually been collected. Use **Download CSV** there to hand a reconciliation
 sheet to a treasurer or import it into a spreadsheet. Each row also shows
 which channel (card / mobile money / etc.) the payment cleared through.
 
-## Adding a real domain + HTTPS later
+## Domain: de-elitesfamily.org
 
-Once you point a domain's A record at `178.63.178.212`:
+The app now has a real domain, **de-elitesfamily.org**. Getting it fully live
+is two separate steps — DNS (at your domain registrar) and then nginx/HTTPS
+(on the VM) — do them in that order, since certbot in step 2 needs the
+domain to already be resolving to the VM.
+
+### 1. Point DNS at the VM
+
+In whichever registrar/DNS panel you bought the domain through (Namecheap,
+GoDaddy, Cloudflare, etc.), add these records:
+
+| Type | Host | Value |
+|---|---|---|
+| A | `@` (or blank — means the bare domain) | `178.63.178.212` |
+| A | `www` | `178.63.178.212` |
+
+Both records point at the same VM; nginx (configured below) will be set up
+to answer for both `de-elitesfamily.org` and `www.de-elitesfamily.org`.
+DNS changes can take anywhere from a few minutes to a few hours to
+propagate — check with `dig de-elitesfamily.org +short` (should print
+`178.63.178.212` once it's live) before moving to step 2.
+
+If you're using Cloudflare specifically: turn the orange-cloud proxy
+**off** (grey cloud / "DNS only") for both records until after certbot has
+run in step 2 — Cloudflare's proxy can interfere with the certificate
+challenge on first setup. You can turn it back on afterwards if you want
+Cloudflare's CDN/proxying.
+
+### 2. Point nginx at the domain and enable HTTPS
+
+Once `dig` confirms DNS is resolving, SSH into the VM and update nginx:
 
 ```bash
+ssh -i <PRIVATE_KEY_PATH> edwinaikins@178.63.178.212
 sudo apt-get install -y certbot python3-certbot-nginx
-sudo nano /etc/nginx/sites-available/de-elites-family   # change server_name _; to your domain
-sudo nginx -t && sudo systemctl reload nginx
-sudo certbot --nginx -d yourdomain.com
+sudo nano /etc/nginx/sites-available/de-elites-family
 ```
 
-Certbot sets up auto-renewing HTTPS and updates the nginx config for you
+Change the `server_name _;` line to:
+
+```
+server_name de-elitesfamily.org www.de-elitesfamily.org;
+```
+
+Then:
+
+```bash
+sudo nginx -t && sudo systemctl reload nginx
+sudo certbot --nginx -d de-elitesfamily.org -d www.de-elitesfamily.org
+```
+
+Certbot provisions a free auto-renewing TLS certificate, rewrites the nginx
+config to serve HTTPS on both names, and redirects plain HTTP to HTTPS.
+Confirm it worked:
+
+```bash
+curl -I https://de-elitesfamily.org
+```
+
+You should get a `200 OK` (or a redirect to `www` — either is fine,
+whichever you'd rather be canonical).
+
+### 3. Update the Paystack webhook URL
+
+Once HTTPS is live, go back to your Paystack dashboard (**Settings → API
+Keys & Webhooks**) and update the webhook URL from the old IP-based one to:
+
+```
+https://de-elitesfamily.org/api/paystack/webhook
+```
+
+### 4. Nothing else needs to change
+
+The GitHub Actions deploy secrets (`VM_HOST`, etc.) stay pointed at the raw
+IP — they're just how CI reaches the VM over SSH and are unrelated to what
+domain visitors use. The app itself doesn't hardcode a domain anywhere
+either; `index.html`'s Open Graph/canonical tags already reference
+`de-elitesfamily.org` for link-preview cards (WhatsApp, Twitter, etc.) and
+SEO, and nothing else in the codebase needed updating for the switch.
