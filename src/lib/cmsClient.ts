@@ -203,3 +203,39 @@ export async function deleteMemberApplication(id: string): Promise<void> {
     throw new Error(result.error || "Failed to delete application");
   }
 }
+
+// --- Application notifications (PDF -> email + WhatsApp group) ---
+
+export interface WhatsAppStatus {
+  configured: boolean;
+  ready: boolean;
+  hasPendingQr: boolean;
+  emailConfigured: boolean;
+}
+
+export async function fetchWhatsAppStatus(): Promise<WhatsAppStatus> {
+  const res = await fetch('/api/admin/whatsapp/status');
+  const result = await res.json().catch(() => ({}));
+  if (!res.ok || !result.success) {
+    throw new Error(result.error || 'Failed to load WhatsApp status');
+  }
+  return result.data;
+}
+
+export async function fetchWhatsAppGroups(): Promise<{ id: string; name: string }[]> {
+  const res = await fetch('/api/admin/whatsapp/groups');
+  const result = await res.json().catch(() => ({}));
+  if (!res.ok || !result.success) {
+    throw new Error(result.error || 'Failed to load WhatsApp groups');
+  }
+  return result.data;
+}
+
+export async function resendApplicationNotifications(id: string): Promise<{ emailSent: boolean; whatsappSent: boolean; emailConfigured: boolean; whatsappConfigured: boolean }> {
+  const res = await fetch(`/api/admin/applications/${encodeURIComponent(id)}/resend`, { method: 'POST' });
+  const result = await res.json().catch(() => ({}));
+  if (!res.ok || !result.success) {
+    throw new Error(result.error || 'Failed to resend notifications');
+  }
+  return result;
+}

@@ -236,6 +236,117 @@ is restarted, it switches to sending real emails automatically. Force either
 behavior with `MAIL_MOCK=true` / `MAIL_MOCK=false` if needed — see
 `.env.example`.
 
+### Membership application notifications (PDF -> email + WhatsApp group)
+
+Whenever someone submits the "Join the Movement" application form, the app
+generates a PDF snapshot of it and can automatically send that PDF to an
+email address and post it into a WhatsApp group — on top of it always being
+visible in the CMS's **Applications** tab either way.
+
+**The email side** just needs one variable, using the same SMTP setup from
+the section above:
+
+```
+APPLICATION_NOTIFY_EMAIL=applications@de-elitesfamily.org
+```
+
+That's it — restart the service and new applications start emailing that
+address a PDF attachment.
+
+**The WhatsApp side is different, and worth understanding before you turn
+it on.** There is no official Meta/WhatsApp API that can post into a
+WhatsApp group your team already created by hand from a phone — Meta's own
+Groups API can only post into brand-new groups it creates itself via an
+invite link, not your existing family group. To post directly into your
+actual existing group with no human having to click anything, this app uses
+[Baileys](https://github.com/WhiskeySockets/Baileys), an **unofficial**
+library that logs in as a real WhatsApp "linked device" — the same
+mechanism as WhatsApp Web — and speaks the same protocol the real app uses.
+
+That means, in plain terms:
+- It is **not sanctioned by WhatsApp/Meta** and technically breaks their
+  Terms of Service around automation. There is a real risk (historically
+  low for small, occasional volume like this — a few applications a week —
+  but not zero) of the linked phone number being flagged or logged out by
+  WhatsApp.
+- It depends on reverse-engineered protocol details that can change without
+  notice when WhatsApp updates their app. This is materially more fragile
+  than the Paystack/SMTP integrations elsewhere in this app, which are
+  official, versioned, and supported. If WhatsApp changes something and
+  Baileys breaks, applications still save fine and the CMS still shows
+  them — only the automatic group post stops working until Baileys ships a
+  fix and you `npm update`.
+- Use a WhatsApp number you're comfortable with carrying that risk — many
+  people use a spare SIM/number dedicated to this rather than a personal
+  one, precisely so a worst-case ban doesn't affect anything else.
+
+**One-time setup:**
+
+1. Add `WHATSAPP_GROUP_ID` to `.env` — but you don't know the group's ID
+   yet, so leave it commented out for this first step and just restart the
+   service:
+   ```bash
+   systemctl --user restart de-elites-family
+   journalctl --user -u de-elites-family -f
+   ```
+2. Because no `WHATSAPP_GROUP_ID` is set yet, nothing happens — that's
+   expected. Skip straight to step 3.
+3. Temporarily set `WHATSAPP_ENABLED=true` (bypassing the "only turns on
+   once WHATSAPP_GROUP_ID is set" default) and `WHATSAPP_GROUP_ID=pending`
+   as placeholders, then restart and watch the logs:
+   ```bash
+   systemctl --user restart de-elites-family
+   journalctl --user -u de-elites-family -f
+   ```
+   A QR code prints directly in the log output.
+4. On the phone whose WhatsApp account you want linked, open **WhatsApp ->
+   Settings -> Linked Devices -> Link a Device**, and scan that QR code.
+   The logs should print `[WhatsApp] Connected.` within a few seconds.
+5. That phone's WhatsApp account needs to already be a member of your
+   target group (join it normally first, same as any person joining a
+   group). Once it is, find the group's real ID by hitting, from the VM or
+   your own machine:
+   ```bash
+   curl http://127.0.0.1:3000/api/admin/whatsapp/groups
+   ```
+   (or use the "WhatsApp Groups" helper in the CMS's Applications tab,
+   which calls the same endpoint). This returns every group that account
+   belongs to, with each group's real ID (looks like
+   `123456789012345678@g.us`) next to its name.
+6. Copy the real ID into `.env`, replacing the `pending` placeholder:
+   ```
+   WHATSAPP_GROUP_ID=123456789012345678@g.us
+   ```
+   You can remove `WHATSAPP_ENABLED=true` at this point too — having a real
+   `WHATSAPP_GROUP_ID` is enough on its own to turn the feature on.
+7. Restart one more time. New applications now post their PDF straight
+   into that group automatically.
+
+The linked session is cached to disk at `WHATSAPP_SESSION_DIR` (defaults to
+a local `whatsapp-session` folder in the app directory) so you only do the
+QR-scan once — it survives restarts and normal redeploys. Two important
+cautions, same shape as `UPLOADS_DIR` below:
+- **Point `WHATSAPP_SESSION_DIR` outside your deployed app directory** on
+  the VM (e.g. a sibling folder), so a future clean checkout/redeploy never
+  wipes it and forces you to re-scan.
+- **Never commit that folder to git** — it holds real WhatsApp login
+  credentials. Make sure it's listed in your `.gitignore`.
+
+**Checking status / troubleshooting:** the CMS's Applications tab shows a
+small "WhatsApp: Connected / Not Connected" badge (from
+`GET /api/admin/whatsapp/status`), and each application has a **Resend**
+button that re-sends its PDF to email + WhatsApp on demand — handy right
+after finishing setup (to backfill applications that came in before
+`WHATSAPP_GROUP_ID` was configured), or any time the connection dropped and
+you want to retry one specific application after reconnecting. If the badge
+ever shows disconnected, check `journalctl --user -u de-elites-family -f`
+for a fresh QR code — WhatsApp occasionally logs out linked devices on its
+own, which needs a re-scan the same way as the first setup.
+
+Don't want the WhatsApp risk at all? Just never set `WHATSAPP_GROUP_ID` (or
+set `WHATSAPP_ENABLED=false`) — the email side above works completely
+independently, and applications are always visible in the CMS regardless.
+
 ### Mobile Money
 
 Both "Pay Dues" and "Pay & Register" checkouts offer **Mobile Money**

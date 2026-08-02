@@ -9,6 +9,8 @@ import jwt from "jsonwebtoken";
 import crypto from "crypto";
 import multer from "multer";
 import nodemailer from "nodemailer";
+import { generateApplicationPdf } from "./pdf";
+import { initWhatsApp, isWhatsAppConfigured, isWhatsAppReady, hasPendingQrCode, listWhatsAppGroups, sendWhatsAppDocument } from "./whatsapp";
 import { PILLARS, LEADERSHIP, GALLERY_ITEMS, DEFAULT_SHOUTOUTS, DEFAULT_MEMBERS, DEFAULT_EVENTS, DEFAULT_HERO } from "./src/data";
 
 const { Pool } = pg;
@@ -174,16 +176,22 @@ function getMailTransporter(): any {
   return cachedMailTransporter;
 }
 
+interface MailAttachment {
+  filename: string;
+  content: Buffer;
+  contentType?: string;
+}
+
 // Returns true once the email has been sent (or, in mock mode, logged) —
 // false only on an actual send failure, so callers can tell the admin to
 // share the credentials with the member directly if that happens.
-async function sendMail(to: string, subject: string, text: string, html: string): Promise<boolean> {
+async function sendMail(to: string, subject: string, text: string, html: string, attachments?: MailAttachment[]): Promise<boolean> {
   if (isMockMailEnabled()) {
-    console.log(`\n[MOCK EMAIL] To: ${to}\nSubject: ${subject}\n\n${text}\n`);
+    console.log(`\n[MOCK EMAIL] To: ${to}\nSubject: ${subject}${attachments?.length ? `\nAttachments: ${attachments.map((a) => a.filename).join(", ")}` : ""}\n\n${text}\n`);
     return true;
   }
   try {
-    await getMailTransporter().sendMail({ from: getMailFrom(), to, subject, text, html });
+    await getMailTransporter().sendMail({ from: getMailFrom(), to, subject, text, html, attachments });
     return true;
   } catch (err) {
     console.error(`Failed to send email to ${to}:`, err);
@@ -534,6 +542,11 @@ async function getCmsData() {
 // Initialize Postgres on server start
 initDb();
 
+// Connect (or reconnect from a saved session) to WhatsApp. No-op if
+// WHATSAPP_GROUP_ID isn't set — see whatsapp.ts for the full explanation of
+// what this is and its tradeoffs.
+initWhatsApp();
+
 // --- API ROUTES ---
 
 // Healthcheck (does not touch the DB — used for basic liveness probes)
@@ -749,6 +762,39 @@ function mapApplicationRow(row: any) {
 }
 
 // Public: submit a new application (from the "Join the Movement" form)
+// Best-effort: emails the application PDF to APPLICATION_NOTIFY_EMAIL (if
+// set) and posts it into the WhatsApp group at WHATSAPP_GROUP_ID (if
+// configured — see whatsapp.ts). Never throws — a delivery failure on
+// either channel must never block an applicant's submission, and an admin
+// can always re-trigger this later via POST /api/admin/applications/:id/resend.
+async function notifyNewApplication(app: ReturnType<typeof mapApplicationRow>): Promise<{ emailSent: boolean; whatsappSent: boolean }> {
+  let emailSent = false;
+  let whatsappSent = false;
+  try {
+    const pdfBuffer = await generateApplicationPdf(app);
+    const fileName = `application-${app.fullName.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}.pdf`;
+
+    const notifyEmail = process.env.APPLICATION_NOTIFY_EMAIL;
+    if (notifyEmail) {
+      emailSent = await sendMail(
+        notifyEmail,
+        `New Membership Application — ${app.fullName}`,
+        `A new membership application was submitted by ${app.fullName} (${app.email}, ${app.phone}). See the attached PDF for full details.`,
+        `<p>A new membership application was submitted by <b>${app.fullName}</b> (${app.email}, ${app.phone}). See the attached PDF for full details.</p>`,
+        [{ filename: fileName, content: pdfBuffer, contentType: "application/pdf" }]
+      );
+    }
+
+    const groupId = process.env.WHATSAPP_GROUP_ID;
+    if (groupId) {
+      whatsappSent = await sendWhatsAppDocument(groupId, pdfBuffer, fileName, `📋 New Membership Application: ${app.fullName}`);
+    }
+  } catch (err) {
+    console.error("Failed to send application notifications:", err);
+  }
+  return { emailSent, whatsappSent };
+}
+
 app.post("/api/applications", async (req, res) => {
   try {
     const b = req.body || {};
@@ -794,7 +840,12 @@ app.post("/api/applications", async (req, res) => {
       ]
     );
 
-    res.json({ success: true, data: mapApplicationRow(result.rows[0]) });
+    const created = mapApplicationRow(result.rows[0]);
+    res.json({ success: true, data: created });
+    // Fire-and-forget: the applicant shouldn't wait on an email/WhatsApp
+    // round-trip for their submission to complete. Errors are caught and
+    // logged inside notifyNewApplication itself.
+    notifyNewApplication(created);
   } catch (error: any) {
     console.error("Failed to submit member application:", error);
     res.status(500).json({ success: false, error: error.message || "Failed to submit application." });
@@ -852,6 +903,56 @@ app.delete("/api/applications/:id", async (req, res) => {
   } catch (error: any) {
     console.error("Failed to delete member application:", error);
     res.status(500).json({ success: false, error: error.message || "Failed to delete application." });
+  }
+});
+
+// Admin: re-send an existing application's PDF to email/WhatsApp on demand
+// — useful the first time WHATSAPP_GROUP_ID gets configured (to backfill
+// applications that came in before it was set up), or any time the
+// unofficial WhatsApp connection dropped and missed one.
+app.post("/api/admin/applications/:id/resend", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const db = getPool();
+    const result = await db.query("SELECT * FROM member_applications WHERE id = $1", [id]);
+    if (result.rowCount === 0) {
+      return res.status(404).json({ success: false, error: "Application not found." });
+    }
+    const app_ = mapApplicationRow(result.rows[0]);
+    const { emailSent, whatsappSent } = await notifyNewApplication(app_);
+    res.json({ success: true, emailSent, whatsappSent, emailConfigured: !!process.env.APPLICATION_NOTIFY_EMAIL, whatsappConfigured: isWhatsAppConfigured() });
+  } catch (error: any) {
+    console.error("Failed to resend application notifications:", error);
+    res.status(500).json({ success: false, error: error.message || "Failed to resend notifications." });
+  }
+});
+
+// Admin: WhatsApp connection status, for a small badge in the CMS so the
+// admin can tell at a glance whether the unofficial WhatsApp link is up —
+// this is meaningfully more likely to silently drop than the SMTP/Paystack
+// integrations, since it isn't an official, supported API.
+app.get("/api/admin/whatsapp/status", async (req, res) => {
+  res.json({
+    success: true,
+    data: {
+      configured: isWhatsAppConfigured(),
+      ready: isWhatsAppReady(),
+      hasPendingQr: hasPendingQrCode(),
+      emailConfigured: !!process.env.APPLICATION_NOTIFY_EMAIL,
+    },
+  });
+});
+
+// Admin: list every WhatsApp group the linked account currently belongs to
+// — used to find a group's ID to paste into WHATSAPP_GROUP_ID. The linked
+// account has to already be a member of the target group (added from a
+// phone, same as any normal group membership) before it shows up here.
+app.get("/api/admin/whatsapp/groups", async (req, res) => {
+  try {
+    const groups = await listWhatsAppGroups();
+    res.json({ success: true, data: groups });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message || "Failed to list WhatsApp groups." });
   }
 });
 

@@ -11,7 +11,10 @@ import { useCms } from '../context/CmsContext';
 import { ImageUpload } from './ImageUpload';
 import { BulkMediaUpload } from './BulkMediaUpload';
 import { Pillar, Leader, GalleryItem, EliteEvent, MediaItem, HeroConfig, CmsUser, MemberApplication, MemberAccount, WelfareDuesPayment, EventPayment, MemberBill, AdminEventRsvp, AdminPaymentRecord, ManualPaymentInput } from '../types';
-import { fetchMemberApplications, updateMemberApplicationStatus, deleteMemberApplication, UploadedMediaItem } from '../lib/cmsClient';
+import {
+  fetchMemberApplications, updateMemberApplicationStatus, deleteMemberApplication, UploadedMediaItem,
+  fetchWhatsAppStatus, fetchWhatsAppGroups, resendApplicationNotifications, WhatsAppStatus,
+} from '../lib/cmsClient';
 import {
   fetchAllMemberAccounts, createMemberAccount, updateMemberAccount, deleteMemberAccount,
   fetchMemberDuesHistoryAdmin, fetchMemberEventPaymentsAdmin, fetchAllPaymentsAdmin,
@@ -81,6 +84,16 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
   const [applications, setApplications] = useState<MemberApplication[]>([]);
   const [applicationsLoading, setApplicationsLoading] = useState(false);
   const [applicationsError, setApplicationsError] = useState<string | null>(null);
+
+  // Application PDF -> email/WhatsApp notification status (see
+  // GET /api/admin/whatsapp/status) — WhatsApp is an unofficial, more
+  // fragile integration than email, so this badge is worth surfacing.
+  const [whatsappStatus, setWhatsappStatus] = useState<WhatsAppStatus | null>(null);
+  const [whatsappGroups, setWhatsappGroups] = useState<{ id: string; name: string }[]>([]);
+  const [whatsappGroupsLoading, setWhatsappGroupsLoading] = useState(false);
+  const [showWhatsappGroups, setShowWhatsappGroups] = useState(false);
+  const [resendingApplicationId, setResendingApplicationId] = useState<string | null>(null);
+  const [resendMsg, setResendMsg] = useState<string | null>(null);
 
   // Member portal accounts (logins for real family members) — also kept off
   // the public CmsDatabase mechanism since accounts carry an email/password.
@@ -211,6 +224,7 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
         .then(setApplications)
         .catch((err: any) => setApplicationsError(err.message || 'Failed to load applications'))
         .finally(() => setApplicationsLoading(false));
+      fetchWhatsAppStatus().then(setWhatsappStatus).catch(() => {});
     }
   }, [isOpen, activeTab]);
 
@@ -635,6 +649,39 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
       if (selectedItemId === id) setSelectedItemId(null);
     } catch (err: any) {
       setApplicationsError(err.message || 'Failed to delete application');
+    }
+  };
+
+  const handleResendApplication = async (id: string, fullName: string) => {
+    setResendingApplicationId(id);
+    setResendMsg(null);
+    try {
+      const { emailSent, whatsappSent, emailConfigured, whatsappConfigured } = await resendApplicationNotifications(id);
+      const parts: string[] = [];
+      if (emailConfigured) parts.push(emailSent ? 'emailed' : 'email failed');
+      if (whatsappConfigured) parts.push(whatsappSent ? 'sent to WhatsApp' : 'WhatsApp send failed');
+      setResendMsg(
+        parts.length === 0
+          ? `Nothing to resend for ${fullName} — set APPLICATION_NOTIFY_EMAIL and/or WHATSAPP_GROUP_ID first.`
+          : `${fullName}'s application PDF: ${parts.join(', ')}.`
+      );
+    } catch (err: any) {
+      setResendMsg(err.message || 'Failed to resend notifications.');
+    } finally {
+      setResendingApplicationId(null);
+    }
+  };
+
+  const handleLoadWhatsappGroups = async () => {
+    setShowWhatsappGroups(true);
+    setWhatsappGroupsLoading(true);
+    try {
+      const groups = await fetchWhatsAppGroups();
+      setWhatsappGroups(groups);
+    } catch {
+      setWhatsappGroups([]);
+    } finally {
+      setWhatsappGroupsLoading(false);
     }
   };
 
@@ -2170,6 +2217,88 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
               {/* APPLICATIONS MODULE VIEW */}
               {activeTab === 'applications' && (
                 <div className="flex-1 overflow-y-auto max-w-6xl w-full mx-auto space-y-6">
+
+                  {/* Notification status — new applications auto-email a PDF
+                      and/or post it to a WhatsApp group; see DEPLOYMENT.md
+                      for setup. WhatsApp is an unofficial integration, so
+                      its status is worth showing at a glance. */}
+                  <div className="bg-charcoal-card rounded-lg border border-gray-900 p-4 flex flex-wrap items-center gap-3">
+                    <span className="font-sans text-[9px] font-black uppercase tracking-widest text-gray-500">
+                      New application PDFs:
+                    </span>
+                    <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded border text-[9px] font-black uppercase tracking-wider ${
+                      whatsappStatus?.emailConfigured ? 'bg-green-950/30 text-green-400 border-green-900/40' : 'bg-gray-800/60 text-gray-500 border-gray-700/40'
+                    }`}>
+                      <Mail className="w-3 h-3" />
+                      Email {whatsappStatus?.emailConfigured ? 'configured' : 'not set up'}
+                    </span>
+                    <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded border text-[9px] font-black uppercase tracking-wider ${
+                      whatsappStatus?.ready ? 'bg-green-950/30 text-green-400 border-green-900/40'
+                      : whatsappStatus?.configured ? 'bg-yellow-950/30 text-yellow-400 border-yellow-900/40'
+                      : 'bg-gray-800/60 text-gray-500 border-gray-700/40'
+                    }`}>
+                      <UserCheck className="w-3 h-3" />
+                      WhatsApp {whatsappStatus?.ready ? 'connected' : whatsappStatus?.configured ? (whatsappStatus?.hasPendingQr ? 'awaiting QR scan' : 'not connected') : 'not set up'}
+                    </span>
+                    <button
+                      onClick={handleLoadWhatsappGroups}
+                      className="ml-auto text-[9px] font-black uppercase tracking-widest text-luxury-gold hover:text-white transition-colors cursor-pointer"
+                    >
+                      Find WhatsApp Group ID
+                    </button>
+                  </div>
+
+                  {showWhatsappGroups && (
+                    <div className="bg-charcoal-card rounded-lg border border-luxury-gold/20 p-4 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <h5 className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">
+                          WhatsApp Groups (linked account's memberships)
+                        </h5>
+                        <button
+                          onClick={() => setShowWhatsappGroups(false)}
+                          className="text-gray-600 hover:text-white transition-colors cursor-pointer"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                      {whatsappGroupsLoading ? (
+                        <Loader2 className="w-4 h-4 animate-spin text-luxury-gold/50" />
+                      ) : !whatsappStatus?.ready ? (
+                        <p className="text-[10px] text-gray-600">
+                          WhatsApp isn't connected yet — see DEPLOYMENT.md ("Membership application notifications") to scan the QR code and link an account first.
+                        </p>
+                      ) : whatsappGroups.length === 0 ? (
+                        <p className="text-[10px] text-gray-600">
+                          No groups found. Make sure the linked WhatsApp account has already joined the target group from a phone.
+                        </p>
+                      ) : (
+                        <div className="space-y-1.5">
+                          {whatsappGroups.map((g) => (
+                            <div key={g.id} className="flex items-center justify-between gap-2 bg-jet-black border border-gray-900 rounded px-3 py-2">
+                              <span className="text-xs text-gray-300 truncate">{g.name}</span>
+                              <div className="flex items-center gap-2 shrink-0">
+                                <span className="font-mono text-[9px] text-gray-500 truncate max-w-[180px]">{g.id}</span>
+                                <button
+                                  onClick={() => { navigator.clipboard?.writeText(g.id); triggerNotification('Group ID copied — paste it into WHATSAPP_GROUP_ID in your .env.'); }}
+                                  className="text-[9px] font-black uppercase tracking-widest text-luxury-gold hover:text-white transition-colors cursor-pointer"
+                                >
+                                  Copy
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {resendMsg && (
+                    <div className="flex items-center gap-2 text-xs text-luxury-gold bg-luxury-gold/10 border border-luxury-gold/20 p-3 rounded">
+                      <Check className="w-4 h-4 shrink-0" />
+                      <span>{resendMsg}</span>
+                    </div>
+                  )}
+
                   <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
 
                     {/* Applications list card */}
@@ -2323,6 +2452,15 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                                     Reset to Pending
                                   </button>
                                 )}
+                                <button
+                                  onClick={() => handleResendApplication(app.id, app.fullName)}
+                                  disabled={resendingApplicationId === app.id}
+                                  title="Re-send this application's PDF to email / WhatsApp"
+                                  className="ml-auto px-4 py-2 rounded bg-jet-black border border-luxury-gold/30 text-luxury-gold hover:bg-luxury-gold/10 font-sans font-black tracking-widest text-[10px] uppercase transition-colors cursor-pointer disabled:opacity-50 flex items-center gap-1.5"
+                                >
+                                  {resendingApplicationId === app.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                                  Resend PDF
+                                </button>
                               </div>
                             </div>
                           );
