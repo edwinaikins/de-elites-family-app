@@ -236,18 +236,6 @@ is restarted, it switches to sending real emails automatically. Force either
 behavior with `MAIL_MOCK=true` / `MAIL_MOCK=false` if needed — see
 `.env.example`.
 
-**Want a copy of every email the app sends** — welcome emails, password
-resets, and application-notification emails alike — landing in an admin
-inbox too? Set `MAIL_BCC` in `.env`:
-
-```
-MAIL_BCC=admin@de-elitesfamily.org
-```
-
-It's sent as a Bcc (invisible to the member, so nobody accidentally
-replies to it), and you can comma-separate more than one address. Restart
-the service to pick it up.
-
 ### Membership application notifications (PDF -> email + WhatsApp group)
 
 Whenever someone submits the "Join the Movement" application form, the app
@@ -255,15 +243,26 @@ generates a PDF snapshot of it and can automatically send that PDF to an
 email address and post it into a WhatsApp group — on top of it always being
 visible in the CMS's **Applications** tab either way.
 
-**The email side** just needs one variable, using the same SMTP setup from
-the section above:
+**The email side** just works once SMTP is set up (see above) — it
+defaults to sending straight to `hello@de-elitesfamily.org`, no extra
+variable needed. Only add `APPLICATION_NOTIFY_EMAIL` if you want it to go
+somewhere else instead:
 
 ```
-APPLICATION_NOTIFY_EMAIL=applications@de-elitesfamily.org
+APPLICATION_NOTIFY_EMAIL=some-other-address@de-elitesfamily.org
 ```
 
-That's it — restart the service and new applications start emailing that
-address a PDF attachment.
+Want a second address to silently get a copy of that same email — e.g. a
+personal inbox alongside the shared `hello@` one? Add:
+
+```
+APPLICATION_NOTIFY_BCC=secondary-admin@de-elitesfamily.org
+```
+
+It's sent as a Bcc (invisible to `APPLICATION_NOTIFY_EMAIL`, so nobody
+accidentally replies to it), and you can comma-separate more than one
+address. This is scoped to just the application-notification email — it
+has no effect on welcome emails or password resets.
 
 **The WhatsApp side is different, and worth understanding before you turn
 it on.** There is no official Meta/WhatsApp API that can post into a

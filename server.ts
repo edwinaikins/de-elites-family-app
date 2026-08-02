@@ -156,14 +156,25 @@ function getMailFrom(): string {
   return process.env.SMTP_FROM || "DE ELITES FAMILY <no-reply@de-elitesfamily.org>";
 }
 
-// MAIL_BCC: an admin address (or comma-separated list) that silently gets a
-// copy of every email this app sends — welcome emails, password resets,
-// and application-notification emails alike — so an admin has a running
-// record and can help a member who says "I never got that email." BCC
-// (not CC) so the copy is invisible to the actual recipient and nobody
-// accidentally hits "reply all" back to an admin inbox.
-function getMailBcc(): string | undefined {
-  const raw = process.env.MAIL_BCC?.trim();
+// Where new membership applications get emailed directly. Defaults to
+// hello@de-elitesfamily.org so this works out of the box — override with
+// APPLICATION_NOTIFY_EMAIL in .env if you ever want it to go elsewhere.
+// Set APPLICATION_NOTIFY_EMAIL="" (empty string) to turn the email side off
+// entirely.
+function getApplicationNotifyEmail(): string | undefined {
+  const raw = process.env.APPLICATION_NOTIFY_EMAIL;
+  if (raw !== undefined) return raw.trim() || undefined;
+  return "hello@de-elitesfamily.org";
+}
+
+// APPLICATION_NOTIFY_BCC: an admin address (or comma-separated list) that
+// silently gets a copy of the member-application notification email
+// specifically — see notifyNewApplication below. Deliberately scoped to
+// just that one email; it does NOT apply to welcome emails or password
+// resets. BCC (not CC) so the copy is invisible to APPLICATION_NOTIFY_EMAIL
+// and nobody accidentally hits "reply all" back to this admin inbox.
+function getApplicationNotifyBcc(): string | undefined {
+  const raw = process.env.APPLICATION_NOTIFY_BCC?.trim();
   return raw ? raw : undefined;
 }
 
@@ -195,9 +206,10 @@ interface MailAttachment {
 
 // Returns true once the email has been sent (or, in mock mode, logged) —
 // false only on an actual send failure, so callers can tell the admin to
-// share the credentials with the member directly if that happens.
-async function sendMail(to: string, subject: string, text: string, html: string, attachments?: MailAttachment[]): Promise<boolean> {
-  const bcc = getMailBcc();
+// share the credentials with the member directly if that happens. `bcc` is
+// opt-in per call (see getApplicationNotifyBcc) — most callers (welcome
+// emails, password resets) leave it unset.
+async function sendMail(to: string, subject: string, text: string, html: string, attachments?: MailAttachment[], bcc?: string): Promise<boolean> {
   if (isMockMailEnabled()) {
     console.log(`\n[MOCK EMAIL] To: ${to}${bcc ? `\nBcc: ${bcc}` : ""}\nSubject: ${subject}${attachments?.length ? `\nAttachments: ${attachments.map((a) => a.filename).join(", ")}` : ""}\n\n${text}\n`);
     return true;
@@ -786,14 +798,15 @@ async function notifyNewApplication(app: ReturnType<typeof mapApplicationRow>): 
     const pdfBuffer = await generateApplicationPdf(app);
     const fileName = `application-${app.fullName.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}.pdf`;
 
-    const notifyEmail = process.env.APPLICATION_NOTIFY_EMAIL;
+    const notifyEmail = getApplicationNotifyEmail();
     if (notifyEmail) {
       emailSent = await sendMail(
         notifyEmail,
         `New Membership Application — ${app.fullName}`,
         `A new membership application was submitted by ${app.fullName} (${app.email}, ${app.phone}). See the attached PDF for full details.`,
         `<p>A new membership application was submitted by <b>${app.fullName}</b> (${app.email}, ${app.phone}). See the attached PDF for full details.</p>`,
-        [{ filename: fileName, content: pdfBuffer, contentType: "application/pdf" }]
+        [{ filename: fileName, content: pdfBuffer, contentType: "application/pdf" }],
+        getApplicationNotifyBcc()
       );
     }
 
@@ -932,7 +945,7 @@ app.post("/api/admin/applications/:id/resend", async (req, res) => {
     }
     const app_ = mapApplicationRow(result.rows[0]);
     const { emailSent, whatsappSent } = await notifyNewApplication(app_);
-    res.json({ success: true, emailSent, whatsappSent, emailConfigured: !!process.env.APPLICATION_NOTIFY_EMAIL, whatsappConfigured: isWhatsAppConfigured() });
+    res.json({ success: true, emailSent, whatsappSent, emailConfigured: !!getApplicationNotifyEmail(), whatsappConfigured: isWhatsAppConfigured() });
   } catch (error: any) {
     console.error("Failed to resend application notifications:", error);
     res.status(500).json({ success: false, error: error.message || "Failed to resend notifications." });
@@ -950,7 +963,7 @@ app.get("/api/admin/whatsapp/status", async (req, res) => {
       configured: isWhatsAppConfigured(),
       ready: isWhatsAppReady(),
       hasPendingQr: hasPendingQrCode(),
-      emailConfigured: !!process.env.APPLICATION_NOTIFY_EMAIL,
+      emailConfigured: !!getApplicationNotifyEmail(),
     },
   });
 });
