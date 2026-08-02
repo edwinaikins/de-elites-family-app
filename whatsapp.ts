@@ -47,14 +47,26 @@ let isReady = false;
 let hasPendingQr = false;
 let starting = false;
 
-// WHATSAPP_ENABLED defaults to "on" the moment WHATSAPP_GROUP_ID is set —
-// there's no other configuration this needs (unlike Paystack/SMTP, there's
-// no "keys" to add; the account IS the credential, established by scanning
-// the QR code once). Set WHATSAPP_ENABLED=false to turn the whole feature
-// off without touching WHATSAPP_GROUP_ID.
+// isWhatsAppConfigured() answers "will a notification actually get posted
+// anywhere" — that needs WHATSAPP_GROUP_ID, since without a group to post
+// into there's nowhere for sendWhatsAppDocument to send. It does NOT gate
+// the connection attempt itself (see shouldConnectWhatsApp below): you have
+// to link a device and discover your group ID via listWhatsAppGroups()
+// *before* WHATSAPP_GROUP_ID can even be set, so requiring it up front would
+// make that first-time setup impossible.
 export function isWhatsAppConfigured(): boolean {
   if (process.env.WHATSAPP_ENABLED === "false") return false;
   return !!process.env.WHATSAPP_GROUP_ID;
+}
+
+// Whether the app should even attempt a WhatsApp connection at all. Defaults
+// to "on" so the very first boot — with no WHATSAPP_GROUP_ID set yet — still
+// prints a QR code, lets you link a device, and lets /api/admin/whatsapp/groups
+// list the groups that device belongs to. Set WHATSAPP_ENABLED=false if you
+// don't want this running at all (e.g. not using the feature, or don't want
+// a QR code showing up in your logs on every restart).
+function shouldConnectWhatsApp(): boolean {
+  return process.env.WHATSAPP_ENABLED !== "false";
 }
 
 export function isWhatsAppReady(): boolean {
@@ -65,10 +77,11 @@ export function hasPendingQrCode(): boolean {
   return hasPendingQr;
 }
 
-// Call once at server startup. Safe to call even when not configured — it
-// just does nothing until WHATSAPP_GROUP_ID is set and the server restarts.
+// Call once at server startup. Safe to call even before WHATSAPP_GROUP_ID is
+// set — it connects and waits for a QR scan regardless, so you can discover
+// your group ID. It only truly no-ops when WHATSAPP_ENABLED=false.
 export async function initWhatsApp(): Promise<void> {
-  if (!isWhatsAppConfigured() || starting) return;
+  if (!shouldConnectWhatsApp() || starting) return;
   starting = true;
   try {
     const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
