@@ -156,6 +156,17 @@ function getMailFrom(): string {
   return process.env.SMTP_FROM || "DE ELITES FAMILY <no-reply@de-elitesfamily.org>";
 }
 
+// MAIL_BCC: an admin address (or comma-separated list) that silently gets a
+// copy of every email this app sends — welcome emails, password resets,
+// and application-notification emails alike — so an admin has a running
+// record and can help a member who says "I never got that email." BCC
+// (not CC) so the copy is invisible to the actual recipient and nobody
+// accidentally hits "reply all" back to an admin inbox.
+function getMailBcc(): string | undefined {
+  const raw = process.env.MAIL_BCC?.trim();
+  return raw ? raw : undefined;
+}
+
 function isMockMailEnabled(): boolean {
   const flag = process.env.MAIL_MOCK;
   if (flag === "true") return true;
@@ -186,12 +197,13 @@ interface MailAttachment {
 // false only on an actual send failure, so callers can tell the admin to
 // share the credentials with the member directly if that happens.
 async function sendMail(to: string, subject: string, text: string, html: string, attachments?: MailAttachment[]): Promise<boolean> {
+  const bcc = getMailBcc();
   if (isMockMailEnabled()) {
-    console.log(`\n[MOCK EMAIL] To: ${to}\nSubject: ${subject}${attachments?.length ? `\nAttachments: ${attachments.map((a) => a.filename).join(", ")}` : ""}\n\n${text}\n`);
+    console.log(`\n[MOCK EMAIL] To: ${to}${bcc ? `\nBcc: ${bcc}` : ""}\nSubject: ${subject}${attachments?.length ? `\nAttachments: ${attachments.map((a) => a.filename).join(", ")}` : ""}\n\n${text}\n`);
     return true;
   }
   try {
-    await getMailTransporter().sendMail({ from: getMailFrom(), to, subject, text, html, attachments });
+    await getMailTransporter().sendMail({ from: getMailFrom(), to, bcc, subject, text, html, attachments });
     return true;
   } catch (err) {
     console.error(`Failed to send email to ${to}:`, err);

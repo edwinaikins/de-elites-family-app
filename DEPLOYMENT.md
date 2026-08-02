@@ -236,6 +236,18 @@ is restarted, it switches to sending real emails automatically. Force either
 behavior with `MAIL_MOCK=true` / `MAIL_MOCK=false` if needed — see
 `.env.example`.
 
+**Want a copy of every email the app sends** — welcome emails, password
+resets, and application-notification emails alike — landing in an admin
+inbox too? Set `MAIL_BCC` in `.env`:
+
+```
+MAIL_BCC=admin@de-elitesfamily.org
+```
+
+It's sent as a Bcc (invisible to the member, so nobody accidentally
+replies to it), and you can comma-separate more than one address. Restart
+the service to pick it up.
+
 ### Membership application notifications (PDF -> email + WhatsApp group)
 
 Whenever someone submits the "Join the Movement" application form, the app
