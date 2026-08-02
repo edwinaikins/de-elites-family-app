@@ -26,7 +26,7 @@
 // Device -> scan it. After that the session is cached to disk
 // (WHATSAPP_SESSION_DIR) and survives restarts without re-scanning, unless
 // the phone unlinks it or WhatsApp logs it out server-side.
-import makeWASocket, {
+import makeWASocketImport, {
   useMultiFileAuthState,
   DisconnectReason,
   fetchLatestBaileysVersion,
@@ -36,6 +36,18 @@ import qrcodeTerminal from "qrcode-terminal";
 import path from "path";
 import fs from "fs";
 import P from "pino";
+
+// Baileys' default export doesn't resolve consistently once esbuild bundles
+// it to CJS — depending on the exact package version, the imported binding
+// can end up being the real makeWASocket(...) function, or an object with
+// it nested one level deeper at `.default` (a known "double default" quirk
+// of this package's CJS/ESM interop under esbuild/webpack). Resolve
+// whichever shape actually came through at runtime instead of assuming one
+// — this is what was crashing initWhatsApp() with "is not a function".
+const makeWASocket: any =
+  typeof makeWASocketImport === "function"
+    ? makeWASocketImport
+    : (makeWASocketImport as any)?.default;
 
 const SESSION_DIR = process.env.WHATSAPP_SESSION_DIR
   ? path.resolve(process.env.WHATSAPP_SESSION_DIR)
@@ -82,6 +94,10 @@ export function hasPendingQrCode(): boolean {
 // your group ID. It only truly no-ops when WHATSAPP_ENABLED=false.
 export async function initWhatsApp(): Promise<void> {
   if (!shouldConnectWhatsApp() || starting) return;
+  if (typeof makeWASocket !== "function") {
+    console.error("[WhatsApp] Could not resolve makeWASocket from @whiskeysockets/baileys — the installed version's export shape isn't recognized. Not attempting to connect.");
+    return;
+  }
   starting = true;
   try {
     const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
