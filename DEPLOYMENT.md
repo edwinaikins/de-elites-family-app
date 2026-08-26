@@ -293,27 +293,21 @@ That means, in plain terms:
 
 **One-time setup:**
 
-1. Add `WHATSAPP_GROUP_ID` to `.env` — but you don't know the group's ID
-   yet, so leave it commented out for this first step and just restart the
-   service:
+1. Watch the logs and restart the service — you don't need `WHATSAPP_GROUP_ID`
+   set yet, the app connects and waits for a QR scan regardless:
    ```bash
-   systemctl --user restart de-elites-family
    journalctl --user -u de-elites-family -f
    ```
-2. Because no `WHATSAPP_GROUP_ID` is set yet, nothing happens — that's
-   expected. Skip straight to step 3.
-3. Temporarily set `WHATSAPP_ENABLED=true` (bypassing the "only turns on
-   once WHATSAPP_GROUP_ID is set" default) and `WHATSAPP_GROUP_ID=pending`
-   as placeholders, then restart and watch the logs:
    ```bash
    systemctl --user restart de-elites-family
-   journalctl --user -u de-elites-family -f
    ```
-   A QR code prints directly in the log output.
-4. On the phone whose WhatsApp account you want linked, open **WhatsApp ->
-   Settings -> Linked Devices -> Link a Device**, and scan that QR code.
-   The logs should print `[WhatsApp] Connected.` within a few seconds.
-5. That phone's WhatsApp account needs to already be a member of your
+   A QR code prints directly in the log output within a few seconds.
+2. On the phone whose WhatsApp account you want linked, open **WhatsApp ->
+   Settings -> Linked Devices -> Link a Device**, and scan that QR code (it
+   expires after about a minute — restart the service again for a fresh one
+   if you miss it). The logs should print `[WhatsApp] Connected.` shortly
+   after.
+3. That phone's WhatsApp account needs to already be a member of your
    target group (join it normally first, same as any person joining a
    group). Once it is, find the group's real ID by hitting, from the VM or
    your own machine:
@@ -324,14 +318,17 @@ That means, in plain terms:
    which calls the same endpoint). This returns every group that account
    belongs to, with each group's real ID (looks like
    `123456789012345678@g.us`) next to its name.
-6. Copy the real ID into `.env`, replacing the `pending` placeholder:
+4. Add the real ID to `.env`:
    ```
    WHATSAPP_GROUP_ID=123456789012345678@g.us
    ```
-   You can remove `WHATSAPP_ENABLED=true` at this point too — having a real
-   `WHATSAPP_GROUP_ID` is enough on its own to turn the feature on.
-7. Restart one more time. New applications now post their PDF straight
-   into that group automatically.
+5. Restart one more time. New applications now post their PDF straight
+   into that group automatically. Since the session is already linked and
+   cached to disk, this restart reconnects quietly — no QR needed again.
+
+Don't want a QR code appearing in your logs on every restart before you've
+gotten to this setup? Set `WHATSAPP_ENABLED=false` until you're ready to do
+it, then remove that line to begin.
 
 The linked session is cached to disk at `WHATSAPP_SESSION_DIR` (defaults to
 a local `whatsapp-session` folder in the app directory) so you only do the
@@ -357,6 +354,105 @@ own, which needs a re-scan the same way as the first setup.
 Don't want the WhatsApp risk at all? Just never set `WHATSAPP_GROUP_ID` (or
 set `WHATSAPP_ENABLED=false`) — the email side above works completely
 independently, and applications are always visible in the CMS regardless.
+
+### Monthly dues reminders + report (WhatsApp)
+
+A month-long cadence of WhatsApp nudges about welfare dues, all posted into
+the same group and all reusing the linked WhatsApp session from application
+notifications above (complete that one-time QR setup first):
+
+| When | What goes out |
+|---|---|
+| Day 1 | A plain "a new month has started — go check what you owe" announcement to the group. No names. |
+| Day 15 | A reminder naming whoever still hasn't paid, and how much they owe. |
+| 4th-to-last day through 2nd-to-last day (i.e. 4, 3, and 2 days before month-end) | Same reminder as day 15, once a day. |
+| Last day of the month | The full paid/unpaid list — and this one **@-tags every member named in it**, so each person gets a direct WhatsApp notification rather than just appearing in a passive list. |
+
+That's the "reminder every day for the last 5 days" — 4 plain reminders
+followed by the tagged list on the actual last day. A day's message is
+skipped automatically (and doesn't count as sent) if there's simply nothing
+to say — e.g. the day-15/countdown reminders skip silently if everyone's
+already paid, and everything skips if no member currently has welfare dues
+configured at all.
+
+A member only ever appears in any of this if they have a welfare dues
+amount configured (`0` means "no dues owed" and is excluded entirely) and
+their account status is `active`. "Paid in full" means their successful
+payments for that month add up to at least their configured dues amount; a
+member who's paid something but not everything is treated as still owing,
+with both the amount still owed and how much they've paid so far shown on
+the day-15/countdown reminders and the final report.
+
+**Tagging requires a phone number in the standard local format** — e.g.
+`0244123456`, the same way members' phone numbers are normally entered
+elsewhere in this app. It's auto-converted to Ghana's `+233` for the
+WhatsApp tag. A number already including the country code (e.g.
+`233244123456`) also works. Anything that doesn't clearly match either
+shape (missing, malformed, obviously not a Ghana number) is silently left
+untagged — that member still appears by name in the final list, just
+without a clickable mention, rather than the whole report failing.
+
+**It works with zero extra configuration** the moment `WHATSAPP_GROUP_ID` is
+set — everything above goes to that same group by default. Only add the
+following if you want to change something:
+
+```
+# Send these to a different group than application notifications (e.g. a
+# members-only or leadership group) — a group's real ID looks like
+# 123456789012345678@g.us and can be found the same way as in the WhatsApp
+# setup above.
+DUES_REPORT_GROUP_ID=123456789012345678@g.us
+
+# What hour (0-23) each day's message sends at — compared against the VM's
+# system clock, defaults to 20 (8pm). Governs all of the above, not just the
+# final report.
+DUES_REPORT_HOUR=20
+```
+
+**Timezone matters here** — the app compares the current hour against your
+VM's own system clock, not against Ghana time specifically. Run
+`timedatectl` on the VM to check. If it's already set to UTC, that lines up
+with Ghana time automatically (Africa/Accra has no daylight saving and sits
+at UTC+0 year-round), so the default `DUES_REPORT_HOUR=20` means 8pm Ghana
+time with no extra work. If your VM is in a different timezone, adjust
+`DUES_REPORT_HOUR` to land at the time you actually want.
+
+**Testing any of these without waiting for the right day:** trigger a send
+manually from the VM (or your own machine). Defaults to the final tagged
+report for the current month:
+
+```bash
+curl -X POST http://127.0.0.1:3000/api/admin/dues-report/send
+```
+
+Pass `"kind"` to test a different message, and `"period"` to target a
+different month (defaults to the current one):
+
+```bash
+# Day 1's announcement
+curl -X POST http://127.0.0.1:3000/api/admin/dues-report/send \
+  -H "Content-Type: application/json" -d '{"kind":"obligation"}'
+
+# Day 15's reminder
+curl -X POST http://127.0.0.1:3000/api/admin/dues-report/send \
+  -H "Content-Type: application/json" -d '{"kind":"mid-month"}'
+
+# A countdown-day reminder — daysLeft can be 1, 2, 3, or 4 (defaults to 3)
+curl -X POST http://127.0.0.1:3000/api/admin/dues-report/send \
+  -H "Content-Type: application/json" -d '{"kind":"countdown","daysLeft":2}'
+
+# The final tagged report, for July instead of the current month
+curl -X POST http://127.0.0.1:3000/api/admin/dues-report/send \
+  -H "Content-Type: application/json" -d '{"period":"2026-07"}'
+```
+
+Every manual call always sends (or, if WhatsApp isn't connected, at least
+returns the message text in the response so you can check it reads right)
+regardless of whether that specific message has already gone out for real —
+safe to run as many times as you like while testing. The scheduled
+(non-manual) sends are each tracked independently and only ever fire once
+per period — a service restart during a send hour, or the 15-minute check
+running more than once inside it, never posts the same message twice.
 
 ### Mobile Money
 

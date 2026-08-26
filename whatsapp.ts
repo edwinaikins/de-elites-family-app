@@ -184,3 +184,28 @@ export async function sendWhatsAppDocument(
     return false;
   }
 }
+
+// Sends a plain text message into a group (e.g. the monthly dues reminders/
+// report — see server.ts). Deliberately does NOT gate on
+// isWhatsAppConfigured(), since that checks WHATSAPP_GROUP_ID specifically
+// and this can target a different group (DUES_REPORT_GROUP_ID) — readiness
+// of the underlying connection is all that matters here. `mentions` is an
+// optional list of participant JIDs (e.g. "233244123456@s.whatsapp.net") to
+// @-tag — the message text should already contain a matching "@<digits>"
+// substring for each one (see phoneToWhatsAppJid/buildDuesReportMessage in
+// server.ts) for WhatsApp clients to render the tag correctly. Same
+// best-effort contract as sendWhatsAppDocument: never throws, false on any
+// failure.
+export async function sendWhatsAppText(groupId: string, text: string, mentions?: string[]): Promise<boolean> {
+  if (!sock || !isReady) {
+    console.warn("[WhatsApp] Not connected — skipping text send. Check the server logs for a QR code to scan.");
+    return false;
+  }
+  try {
+    await sock.sendMessage(groupId, { text, ...(mentions?.length ? { mentions } : {}) });
+    return true;
+  } catch (err) {
+    console.error("[WhatsApp] Failed to send text message:", err);
+    return false;
+  }
+}
