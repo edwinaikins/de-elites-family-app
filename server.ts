@@ -1022,23 +1022,24 @@ app.post("/api/admin/dues-report/send", async (req, res) => {
     const bodyPeriod = typeof req.body?.period === "string" ? req.body.period : undefined;
     const period = bodyPeriod && /^\d{4}-\d{2}$/.test(bodyPeriod) ? bodyPeriod : currentDuesPeriod();
     const kind = typeof req.body?.kind === "string" ? req.body.kind : "final";
+    const duesKind: DuesKind = req.body?.duesKind === "executive" ? "executive" : "welfare";
 
     if (kind === "obligation") {
-      const result = await sendDuesObligationNotice(period, { force: true });
-      return res.json({ success: true, data: { kind, period, ...result } });
+      const result = await sendDuesObligationNotice(period, duesKind, { force: true });
+      return res.json({ success: true, data: { kind, duesKind, period, ...result } });
     }
     if (kind === "mid-month") {
-      const result = await sendDuesReminder(period, "mid-month", "🔔 *Mid-Month Reminder*", { force: true });
-      return res.json({ success: true, data: { kind, period, ...result } });
+      const result = await sendDuesReminder(period, duesKind, "mid-month", "🔔 *Mid-Month Reminder*", { force: true });
+      return res.json({ success: true, data: { kind, duesKind, period, ...result } });
     }
     if (kind === "countdown") {
       const daysLeft = [1, 2, 3, 4].includes(Number(req.body?.daysLeft)) ? Number(req.body.daysLeft) : 3;
       const heading = `⏰ *${daysLeft} day${daysLeft === 1 ? "" : "s"} left this month!*`;
-      const result = await sendDuesReminder(period, `countdown-${daysLeft}`, heading, { force: true });
-      return res.json({ success: true, data: { kind, period, daysLeft, ...result } });
+      const result = await sendDuesReminder(period, duesKind, `countdown-${daysLeft}`, heading, { force: true });
+      return res.json({ success: true, data: { kind, duesKind, period, daysLeft, ...result } });
     }
     // Default: the final tagged paid/unpaid report.
-    const result = await sendMonthlyDuesReport(period, { force: true });
+    const result = await sendMonthlyDuesReport(period, duesKind, { force: true });
     res.json({ success: true, data: { kind: "final", ...result } });
   } catch (error: any) {
     console.error("Failed to send dues report:", error);
@@ -1818,35 +1819,57 @@ async function getExecutiveDuesPaidSoFar(memberId: string, period: string): Prom
   return Number(result.rows[0]?.paid || 0);
 }
 
-// --- Monthly welfare dues reminders + report (WhatsApp) ---
+// --- Monthly dues reminders + report (WhatsApp) ---
 //
 // A month-long cadence of nudges, all posted into WhatsApp, all keyed off
-// the VM's clock at DUES_REPORT_HOUR:
+// the VM's clock at DUES_REPORT_HOUR, run in parallel for TWO independent
+// dues types — regular welfare dues (every active member who owes them) and
+// executive dues (only members flagged as executives, on top of their
+// regular welfare dues — see executive_dues_amount elsewhere in this file):
 //   Day 1        — "a new month has started, dues are due" announcement.
 //   Day 15       — mid-month reminder naming whoever still hasn't paid.
 //   Last 5 days  — a reminder every day naming whoever still hasn't paid...
 //   ...except the very last of those 5 days (the actual last day of the
 //     month), which instead posts the full paid/unpaid list and @-tags
 //     every member named in it, so everyone gets a direct notification.
-// Every step is idempotent via dues_report_log (see hasDuesEventBeenSent /
-// markDuesEventSent) — a distinct event_key per period+kind means a service
-// restart or the scheduler's periodic check firing more than once inside the
-// send hour can never double-post. See maybeSendScheduledDuesReport for the
-// scheduling side; POST /api/admin/dues-report/send exercises any of these
-// on demand for testing, bypassing that dedup with `force`.
+// Welfare and executive dues are entirely separate messages (clearly
+// labeled) since they're separate obligations with separate member pools —
+// an executive owes both and will see both; a non-executive only ever sees
+// the welfare ones. Every step is idempotent via dues_report_log (see
+// hasDuesEventBeenSent/markDuesEventSent) — a distinct event_key per
+// dues-kind+period+event means a service restart or the scheduler's
+// periodic check firing more than once inside the send hour can never
+// double-post. See maybeSendScheduledDuesReport for the scheduling side;
+// POST /api/admin/dues-report/send exercises any of these on demand for
+// testing, bypassing that dedup with `force`.
 
-// DUES_REPORT_GROUP_ID lets these go to a different WhatsApp group than
-// new-application notifications (e.g. a members-only or leadership group) —
-// falls back to WHATSAPP_GROUP_ID so this works with zero extra config if
-// you're fine with the same group getting both.
+type DuesKind = "welfare" | "executive";
+
+// DUES_REPORT_GROUP_ID lets welfare dues messages go to a different WhatsApp
+// group than new-application notifications (e.g. a members-only or
+// leadership group) — falls back to WHATSAPP_GROUP_ID so this works with
+// zero extra config if you're fine with the same group getting both.
 function getDuesReportGroupId(): string | undefined {
   return process.env.DUES_REPORT_GROUP_ID?.trim() || process.env.WHATSAPP_GROUP_ID?.trim() || undefined;
 }
 
+// EXEC_DUES_REPORT_GROUP_ID likewise lets executive dues messages go
+// somewhere different again (e.g. a dedicated executives-only group) —
+// falls back to getDuesReportGroupId() so, with nothing extra set, both
+// dues kinds land in the same already-configured channel.
+function getExecDuesReportGroupId(): string | undefined {
+  return process.env.EXEC_DUES_REPORT_GROUP_ID?.trim() || getDuesReportGroupId();
+}
+
+const DUES_KIND_CONFIG: Record<DuesKind, { label: string; groupIdFn: () => string | undefined }> = {
+  welfare: { label: "Welfare Dues", groupIdFn: getDuesReportGroupId },
+  executive: { label: "Executive Dues", groupIdFn: getExecDuesReportGroupId },
+};
+
 // What hour (0-23) to send at, compared against the VM's system clock — see
 // DEPLOYMENT.md for a note on checking/matching your server's timezone to
 // Ghana time. Defaults to 20 (8pm). Governs every message in this section,
-// not just the final report.
+// both dues kinds, not just the final report.
 function getDuesReportHour(): number {
   const raw = Number(process.env.DUES_REPORT_HOUR);
   return Number.isInteger(raw) && raw >= 0 && raw <= 23 ? raw : 20;
@@ -1862,9 +1885,11 @@ function formatDuesPeriodLabel(period: string): string {
   return new Date(year, month - 1, 1).toLocaleString("en-US", { month: "long", year: "numeric" });
 }
 
-// event_key is "<period>:<kind>", e.g. "2026-08:obligation", "2026-08:mid-month",
-// "2026-08:countdown-3", "2026-08:final-report" — one row per distinct message
-// this section can ever send, so each is deduped independently of the others.
+// event_key is "<kind>:<period>:<event>", e.g. "welfare:2026-08:obligation",
+// "executive:2026-08:mid-month", "welfare:2026-08:countdown-3",
+// "executive:2026-08:final-report" — one row per distinct message this
+// section can ever send, so every kind/period/event combination is deduped
+// independently of every other.
 async function hasDuesEventBeenSent(eventKey: string): Promise<boolean> {
   const db = getPool();
   const result = await db.query("SELECT 1 FROM dues_report_log WHERE event_key = $1", [eventKey]);
@@ -1885,29 +1910,40 @@ interface DuesReportRow {
   paid: number;
 }
 
-// One query: every active member who actually owes welfare dues, alongside
-// however much they've successfully paid toward this specific period.
-async function getDuesReportRows(period: string): Promise<DuesReportRow[]> {
+// One query: every active member who actually owes this kind of dues,
+// alongside however much they've successfully paid toward this specific
+// period. Two fully separate, hardcoded query strings rather than
+// interpolating a table/column name — same caution as
+// getExecutiveDuesPaidSoFar elsewhere in this file, kept deliberately safe
+// against ever accidentally interpolating a raw SQL identifier.
+async function getDuesReportRows(period: string, kind: DuesKind): Promise<DuesReportRow[]> {
   const db = getPool();
-  const result = await db.query(
-    `SELECT ma.id, ma.full_name, ma.phone, ma.dues_amount, ma.currency,
-            COALESCE(paid.total, 0) AS paid
-     FROM member_accounts ma
-     LEFT JOIN (
-       SELECT member_id, SUM(amount) AS total
-       FROM welfare_dues_payments
-       WHERE period = $1 AND status = 'success'
-       GROUP BY member_id
-     ) paid ON paid.member_id = ma.id
-     WHERE ma.status = 'active' AND ma.dues_amount > 0
-     ORDER BY ma.full_name ASC`,
-    [period]
-  );
+  const query =
+    kind === "welfare"
+      ? `SELECT ma.id, ma.full_name, ma.phone, ma.dues_amount AS amount, ma.currency,
+                COALESCE(paid.total, 0) AS paid
+         FROM member_accounts ma
+         LEFT JOIN (
+           SELECT member_id, SUM(amount) AS total FROM welfare_dues_payments
+           WHERE period = $1 AND status = 'success' GROUP BY member_id
+         ) paid ON paid.member_id = ma.id
+         WHERE ma.status = 'active' AND ma.dues_amount > 0
+         ORDER BY ma.full_name ASC`
+      : `SELECT ma.id, ma.full_name, ma.phone, ma.executive_dues_amount AS amount, ma.currency,
+                COALESCE(paid.total, 0) AS paid
+         FROM member_accounts ma
+         LEFT JOIN (
+           SELECT member_id, SUM(amount) AS total FROM executive_dues_payments
+           WHERE period = $1 AND status = 'success' GROUP BY member_id
+         ) paid ON paid.member_id = ma.id
+         WHERE ma.status = 'active' AND ma.executive_dues_amount > 0
+         ORDER BY ma.full_name ASC`;
+  const result = await db.query(query, [period]);
   return result.rows.map((row: any) => ({
     id: row.id,
     fullName: row.full_name,
     phone: row.phone || undefined,
-    duesAmount: Number(row.dues_amount),
+    duesAmount: Number(row.amount),
     currency: row.currency,
     paid: Number(row.paid),
   }));
@@ -1935,8 +1971,9 @@ function phoneToWhatsAppJid(phone: string | undefined): string | undefined {
 // just a passive line in a list. Members whose phone number doesn't resolve
 // to a tag (see phoneToWhatsAppJid) still appear in the list by name, just
 // without a mention.
-function buildDuesReportMessage(period: string, rows: DuesReportRow[]): { text: string; mentions: string[] } {
+function buildDuesReportMessage(period: string, rows: DuesReportRow[], kind: DuesKind): { text: string; mentions: string[] } {
   const label = formatDuesPeriodLabel(period);
+  const duesLabel = DUES_KIND_CONFIG[kind].label;
   const paid = rows.filter((r) => r.paid >= r.duesAmount);
   const unpaid = rows.filter((r) => r.paid < r.duesAmount);
   const totalOutstanding = unpaid.reduce((sum, r) => sum + Math.max(0, r.duesAmount - r.paid), 0);
@@ -1951,11 +1988,11 @@ function buildDuesReportMessage(period: string, rows: DuesReportRow[]): { text: 
   };
 
   const lines: string[] = [];
-  lines.push(`📊 *DE ELITES FAMILY — Welfare Dues Report: ${label}*`);
+  lines.push(`📊 *DE ELITES FAMILY — ${duesLabel} Report: ${label}*`);
   lines.push("");
 
   if (rows.length === 0) {
-    lines.push("No members currently have welfare dues configured.");
+    lines.push(`No members currently have ${duesLabel.toLowerCase()} configured.`);
     return { text: lines.join("\n"), mentions };
   }
 
@@ -1964,7 +2001,7 @@ function buildDuesReportMessage(period: string, rows: DuesReportRow[]): { text: 
   lines.push("");
 
   if (unpaid.length === 0) {
-    lines.push("🎉 Everyone has paid their dues in full this month!");
+    lines.push(`🎉 Everyone has paid their ${duesLabel.toLowerCase()} in full this month!`);
   } else {
     lines.push(`⏳ *Not yet paid* (${unpaid.length})`);
     lines.push(
@@ -1979,19 +2016,21 @@ function buildDuesReportMessage(period: string, rows: DuesReportRow[]): { text: 
   }
 
   lines.push("");
-  lines.push("_Automated monthly reminder — kindly settle any outstanding dues._");
+  lines.push(`_Automated monthly reminder — kindly settle any outstanding ${duesLabel.toLowerCase()}._`);
   return { text: lines.join("\n"), mentions };
 }
 
 // Day 1's plain announcement — no per-member list, since the point is just
 // "a new month started, go check what you owe", not to call anyone out this
-// early. Skipped entirely if no member currently has dues configured.
-function buildDuesObligationMessage(period: string): string {
+// early. Skipped entirely if no member currently has this kind of dues
+// configured.
+function buildDuesObligationMessage(period: string, kind: DuesKind): string {
   const label = formatDuesPeriodLabel(period);
+  const duesLabel = DUES_KIND_CONFIG[kind].label;
   return [
-    `📅 *DE ELITES FAMILY — ${label} Welfare Dues*`,
+    `📅 *DE ELITES FAMILY — ${label} ${duesLabel}*`,
     "",
-    `A new month has begun! Kindly settle your welfare dues for ${label} before month-end — check the Member Portal -> Dues tab for your exact amount and to pay.`,
+    `A new month has begun! Kindly settle your ${duesLabel.toLowerCase()} for ${label} before month-end — check the Member Portal -> Dues tab for your exact amount and to pay.`,
     "",
     "Thank you for keeping the family strong! 🙏",
   ].join("\n");
@@ -2000,10 +2039,11 @@ function buildDuesObligationMessage(period: string): string {
 // Day 15 and the countdown days (last 5 days minus the final one) share this
 // shape: a heading plus a plain-name list (no @-tagging — that's reserved
 // for the final report) of whoever still hasn't paid.
-function buildDuesReminderMessage(period: string, unpaidRows: DuesReportRow[], heading: string): string {
+function buildDuesReminderMessage(period: string, unpaidRows: DuesReportRow[], heading: string, kind: DuesKind): string {
   const label = formatDuesPeriodLabel(period);
+  const duesLabel = DUES_KIND_CONFIG[kind].label;
   const lines: string[] = [];
-  lines.push(`${heading} — *${label} Welfare Dues*`);
+  lines.push(`${heading} — *${label} ${duesLabel}*`);
   lines.push("");
   lines.push("Still outstanding for:");
   lines.push(
@@ -2022,14 +2062,16 @@ type DuesSendSkipReason = "already-sent" | "no-members" | "all-paid";
 // Day 1's obligation notice.
 async function sendDuesObligationNotice(
   period: string,
+  kind: DuesKind,
   opts: { force?: boolean } = {}
 ): Promise<{ sent: boolean; skipped?: DuesSendSkipReason }> {
-  const eventKey = `${period}:obligation`;
+  const eventKey = `${kind}:${period}:obligation`;
   if (!opts.force && (await hasDuesEventBeenSent(eventKey))) return { sent: false, skipped: "already-sent" };
-  const rows = await getDuesReportRows(period);
+  const rows = await getDuesReportRows(period, kind);
   if (rows.length === 0) return { sent: false, skipped: "no-members" };
-  const groupId = getDuesReportGroupId();
-  const sent = groupId && isWhatsAppReady() ? await sendWhatsAppText(groupId, buildDuesObligationMessage(period)) : false;
+  const groupId = DUES_KIND_CONFIG[kind].groupIdFn();
+  const sent =
+    groupId && isWhatsAppReady() ? await sendWhatsAppText(groupId, buildDuesObligationMessage(period, kind)) : false;
   if (!opts.force) await markDuesEventSent(eventKey);
   return { sent };
 }
@@ -2038,22 +2080,25 @@ async function sendDuesObligationNotice(
 // days — same shape, just a different heading/event key per caller.
 async function sendDuesReminder(
   period: string,
+  kind: DuesKind,
   eventSuffix: string,
   heading: string,
   opts: { force?: boolean } = {}
 ): Promise<{ sent: boolean; skipped?: DuesSendSkipReason }> {
-  const eventKey = `${period}:${eventSuffix}`;
+  const eventKey = `${kind}:${period}:${eventSuffix}`;
   if (!opts.force && (await hasDuesEventBeenSent(eventKey))) return { sent: false, skipped: "already-sent" };
-  const rows = await getDuesReportRows(period);
+  const rows = await getDuesReportRows(period, kind);
   if (rows.length === 0) return { sent: false, skipped: "no-members" };
   const unpaid = rows.filter((r) => r.paid < r.duesAmount);
   if (unpaid.length === 0) {
     if (!opts.force) await markDuesEventSent(eventKey);
     return { sent: false, skipped: "all-paid" };
   }
-  const groupId = getDuesReportGroupId();
+  const groupId = DUES_KIND_CONFIG[kind].groupIdFn();
   const sent =
-    groupId && isWhatsAppReady() ? await sendWhatsAppText(groupId, buildDuesReminderMessage(period, unpaid, heading)) : false;
+    groupId && isWhatsAppReady()
+      ? await sendWhatsAppText(groupId, buildDuesReminderMessage(period, unpaid, heading, kind))
+      : false;
   if (!opts.force) await markDuesEventSent(eventKey);
   return { sent };
 }
@@ -2064,9 +2109,11 @@ async function sendDuesReminder(
 // silently swallowed by "already sent this period".
 async function sendMonthlyDuesReport(
   period: string,
+  kind: DuesKind,
   opts: { force?: boolean } = {}
 ): Promise<{
   period: string;
+  kind: DuesKind;
   message: string;
   mentionedCount: number;
   paidCount: number;
@@ -2076,9 +2123,9 @@ async function sendMonthlyDuesReport(
   whatsappConfigured: boolean;
   skipped?: "already-sent";
 }> {
-  const eventKey = `${period}:final-report`;
-  const rows = await getDuesReportRows(period);
-  const built = buildDuesReportMessage(period, rows);
+  const eventKey = `${kind}:${period}:final-report`;
+  const rows = await getDuesReportRows(period, kind);
+  const built = buildDuesReportMessage(period, rows, kind);
   const summary = {
     paidCount: rows.filter((r) => r.paid >= r.duesAmount).length,
     unpaidCount: rows.filter((r) => r.paid < r.duesAmount).length,
@@ -2088,16 +2135,17 @@ async function sendMonthlyDuesReport(
   if (!opts.force && (await hasDuesEventBeenSent(eventKey))) {
     return {
       period,
+      kind,
       message: built.text,
       mentionedCount: built.mentions.length,
       ...summary,
       whatsappSent: false,
-      whatsappConfigured: !!getDuesReportGroupId(),
+      whatsappConfigured: !!DUES_KIND_CONFIG[kind].groupIdFn(),
       skipped: "already-sent",
     };
   }
 
-  const groupId = getDuesReportGroupId();
+  const groupId = DUES_KIND_CONFIG[kind].groupIdFn();
   let whatsappSent = false;
   if (groupId && isWhatsAppReady()) {
     whatsappSent = await sendWhatsAppText(groupId, built.text, built.mentions);
@@ -2105,6 +2153,7 @@ async function sendMonthlyDuesReport(
   if (!opts.force) await markDuesEventSent(eventKey);
   return {
     period,
+    kind,
     message: built.text,
     mentionedCount: built.mentions.length,
     ...summary,
@@ -2113,40 +2162,49 @@ async function sendMonthlyDuesReport(
   };
 }
 
-// Checked on an interval (see the setInterval near initWhatsApp() below).
-// Every failure is caught and logged — a dues-messaging hiccup must never
-// crash the server.
+// Checked on an interval (see the setInterval near initWhatsApp() below),
+// running both dues kinds every time it fires. Every failure is caught and
+// logged — a dues-messaging hiccup must never crash the server.
 async function maybeSendScheduledDuesReport(): Promise<void> {
-  try {
-    if (!getDuesReportGroupId() || !isWhatsAppReady()) return;
-    const now = new Date();
-    if (now.getHours() !== getDuesReportHour()) return;
+  const now = new Date();
+  if (now.getHours() !== getDuesReportHour()) return;
 
-    const period = currentDuesPeriod(now);
-    const day = now.getDate();
-    const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-    const daysLeft = lastDay - day; // 0 on the last day of the month
+  const period = currentDuesPeriod(now);
+  const day = now.getDate();
+  const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  const daysLeft = lastDay - day; // 0 on the last day of the month
 
-    if (day === 1) {
-      const r = await sendDuesObligationNotice(period);
-      if (!r.skipped) console.log(`[Dues Report] Sent ${period} obligation notice — WhatsApp ${r.sent ? "delivered" : "NOT delivered (check connection)"}.`);
-    } else if (day === 15) {
-      const r = await sendDuesReminder(period, "mid-month", "🔔 *Mid-Month Reminder*");
-      if (!r.skipped) console.log(`[Dues Report] Sent ${period} mid-month reminder — WhatsApp ${r.sent ? "delivered" : "NOT delivered (check connection)"}.`);
-    } else if (daysLeft === 0) {
-      const r = await sendMonthlyDuesReport(period);
-      if (!r.skipped)
-        console.log(
-          `[Dues Report] Sent ${period} final report (${r.paidCount} paid, ${r.unpaidCount} unpaid, ${r.mentionedCount} tagged) — WhatsApp ${r.whatsappSent ? "delivered" : "NOT delivered (check connection)"}.`
-        );
-    } else if (daysLeft >= 1 && daysLeft <= 4) {
-      const heading = `⏰ *${daysLeft} day${daysLeft === 1 ? "" : "s"} left this month!*`;
-      const r = await sendDuesReminder(period, `countdown-${daysLeft}`, heading);
-      if (!r.skipped)
-        console.log(`[Dues Report] Sent ${period} countdown reminder (${daysLeft} days left) — WhatsApp ${r.sent ? "delivered" : "NOT delivered (check connection)"}.`);
+  for (const kind of ["welfare", "executive"] as DuesKind[]) {
+    try {
+      const groupId = DUES_KIND_CONFIG[kind].groupIdFn();
+      if (!groupId || !isWhatsAppReady()) continue;
+      const duesLabel = DUES_KIND_CONFIG[kind].label;
+
+      if (day === 1) {
+        const r = await sendDuesObligationNotice(period, kind);
+        if (!r.skipped)
+          console.log(`[Dues Report] Sent ${period} ${duesLabel} obligation notice — WhatsApp ${r.sent ? "delivered" : "NOT delivered (check connection)"}.`);
+      } else if (day === 15) {
+        const r = await sendDuesReminder(period, kind, "mid-month", "🔔 *Mid-Month Reminder*");
+        if (!r.skipped)
+          console.log(`[Dues Report] Sent ${period} ${duesLabel} mid-month reminder — WhatsApp ${r.sent ? "delivered" : "NOT delivered (check connection)"}.`);
+      } else if (daysLeft === 0) {
+        const r = await sendMonthlyDuesReport(period, kind);
+        if (!r.skipped)
+          console.log(
+            `[Dues Report] Sent ${period} ${duesLabel} final report (${r.paidCount} paid, ${r.unpaidCount} unpaid, ${r.mentionedCount} tagged) — WhatsApp ${r.whatsappSent ? "delivered" : "NOT delivered (check connection)"}.`
+          );
+      } else if (daysLeft >= 1 && daysLeft <= 4) {
+        const heading = `⏰ *${daysLeft} day${daysLeft === 1 ? "" : "s"} left this month!*`;
+        const r = await sendDuesReminder(period, kind, `countdown-${daysLeft}`, heading);
+        if (!r.skipped)
+          console.log(
+            `[Dues Report] Sent ${period} ${duesLabel} countdown reminder (${daysLeft} days left) — WhatsApp ${r.sent ? "delivered" : "NOT delivered (check connection)"}.`
+          );
+      }
+    } catch (err) {
+      console.error(`[Dues Report] Failed scheduled ${kind} dues messaging:`, err);
     }
-  } catch (err) {
-    console.error("[Dues Report] Failed scheduled dues messaging:", err);
   }
 }
 

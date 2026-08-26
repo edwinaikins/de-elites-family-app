@@ -357,8 +357,10 @@ independently, and applications are always visible in the CMS regardless.
 
 ### Monthly dues reminders + report (WhatsApp)
 
-A month-long cadence of WhatsApp nudges about welfare dues, all posted into
-the same group and all reusing the linked WhatsApp session from application
+A month-long cadence of WhatsApp nudges, run as **two entirely separate
+tracks** — welfare dues (every active member who owes them) and executive
+dues (only members flagged as executives, on top of their regular welfare
+dues) — each reusing the linked WhatsApp session from application
 notifications above (complete that one-time QR setup first):
 
 | When | What goes out |
@@ -369,19 +371,24 @@ notifications above (complete that one-time QR setup first):
 | Last day of the month | The full paid/unpaid list — and this one **@-tags every member named in it**, so each person gets a direct WhatsApp notification rather than just appearing in a passive list. |
 
 That's the "reminder every day for the last 5 days" — 4 plain reminders
-followed by the tagged list on the actual last day. A day's message is
+followed by the tagged list on the actual last day — and it runs on this
+schedule independently for welfare dues and for executive dues, so an
+executive on both tracks can get two distinct messages the same day (each
+clearly labeled "Welfare Dues" or "Executive Dues"). A day's message is
 skipped automatically (and doesn't count as sent) if there's simply nothing
-to say — e.g. the day-15/countdown reminders skip silently if everyone's
-already paid, and everything skips if no member currently has welfare dues
-configured at all.
+to say for that track — e.g. the day-15/countdown reminders skip silently
+if everyone on that track has already paid, and everything skips if no
+member currently has that kind of dues configured at all.
 
-A member only ever appears in any of this if they have a welfare dues
-amount configured (`0` means "no dues owed" and is excluded entirely) and
-their account status is `active`. "Paid in full" means their successful
-payments for that month add up to at least their configured dues amount; a
-member who's paid something but not everything is treated as still owing,
-with both the amount still owed and how much they've paid so far shown on
-the day-15/countdown reminders and the final report.
+A member only ever appears in the welfare track if they have a welfare
+dues amount configured (`0` means "no dues owed" and is excluded entirely),
+and only in the executive track if their `executive_dues_amount` is
+likewise above zero — both require account status `active`. "Paid in full"
+means their successful payments for that month, against that specific dues
+type, add up to at least the configured amount; a member who's paid
+something but not everything is treated as still owing, with both the
+amount still owed and how much they've paid so far shown on the
+day-15/countdown reminders and the final report.
 
 **Tagging requires a phone number in the standard local format** — e.g.
 `0244123456`, the same way members' phone numbers are normally entered
@@ -393,18 +400,23 @@ untagged — that member still appears by name in the final list, just
 without a clickable mention, rather than the whole report failing.
 
 **It works with zero extra configuration** the moment `WHATSAPP_GROUP_ID` is
-set — everything above goes to that same group by default. Only add the
-following if you want to change something:
+set — both tracks go to that same group by default. Only add the following
+if you want to change something:
 
 ```
-# Send these to a different group than application notifications (e.g. a
-# members-only or leadership group) — a group's real ID looks like
-# 123456789012345678@g.us and can be found the same way as in the WhatsApp
-# setup above.
+# Send WELFARE dues messages to a different group than new-application
+# notifications (e.g. a members-only or leadership group) — a group's real
+# ID looks like 123456789012345678@g.us and can be found the same way as in
+# the WhatsApp setup above.
 DUES_REPORT_GROUP_ID=123456789012345678@g.us
 
+# Send EXECUTIVE dues messages somewhere different again (e.g. a dedicated
+# executives-only group). Defaults to DUES_REPORT_GROUP_ID (which itself
+# falls back to WHATSAPP_GROUP_ID) if unset.
+EXEC_DUES_REPORT_GROUP_ID=123456789012345678@g.us
+
 # What hour (0-23) each day's message sends at — compared against the VM's
-# system clock, defaults to 20 (8pm). Governs all of the above, not just the
+# system clock, defaults to 20 (8pm). Governs both tracks, not just the
 # final report.
 DUES_REPORT_HOUR=20
 ```
@@ -419,19 +431,24 @@ time with no extra work. If your VM is in a different timezone, adjust
 
 **Testing any of these without waiting for the right day:** trigger a send
 manually from the VM (or your own machine). Defaults to the final tagged
-report for the current month:
+welfare dues report for the current month:
 
 ```bash
 curl -X POST http://127.0.0.1:3000/api/admin/dues-report/send
 ```
 
-Pass `"kind"` to test a different message, and `"period"` to target a
-different month (defaults to the current one):
+Pass `"kind"` to test a different message, `"duesKind":"executive"` to test
+the executive-dues track instead of welfare (the default), and `"period"`
+to target a different month (defaults to the current one):
 
 ```bash
-# Day 1's announcement
+# Day 1's announcement (welfare)
 curl -X POST http://127.0.0.1:3000/api/admin/dues-report/send \
   -H "Content-Type: application/json" -d '{"kind":"obligation"}'
+
+# Day 1's announcement (executive)
+curl -X POST http://127.0.0.1:3000/api/admin/dues-report/send \
+  -H "Content-Type: application/json" -d '{"kind":"obligation","duesKind":"executive"}'
 
 # Day 15's reminder
 curl -X POST http://127.0.0.1:3000/api/admin/dues-report/send \
@@ -441,18 +458,19 @@ curl -X POST http://127.0.0.1:3000/api/admin/dues-report/send \
 curl -X POST http://127.0.0.1:3000/api/admin/dues-report/send \
   -H "Content-Type: application/json" -d '{"kind":"countdown","daysLeft":2}'
 
-# The final tagged report, for July instead of the current month
+# The final tagged executive dues report, for July instead of the current month
 curl -X POST http://127.0.0.1:3000/api/admin/dues-report/send \
-  -H "Content-Type: application/json" -d '{"period":"2026-07"}'
+  -H "Content-Type: application/json" -d '{"duesKind":"executive","period":"2026-07"}'
 ```
 
 Every manual call always sends (or, if WhatsApp isn't connected, at least
 returns the message text in the response so you can check it reads right)
 regardless of whether that specific message has already gone out for real —
 safe to run as many times as you like while testing. The scheduled
-(non-manual) sends are each tracked independently and only ever fire once
-per period — a service restart during a send hour, or the 15-minute check
-running more than once inside it, never posts the same message twice.
+(non-manual) sends are each tracked independently per dues track and only
+ever fire once per period — a service restart during a send hour, or the
+15-minute check running more than once inside it, never posts the same
+message twice.
 
 ### Mobile Money
 
