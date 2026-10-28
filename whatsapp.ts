@@ -59,6 +59,25 @@ let isReady = false;
 let hasPendingQr = false;
 let starting = false;
 
+// Registered via onIncomingDirectMessage below — business logic (looking up
+// a member, updating the database) lives in server.ts, not here. This file
+// stays protocol-only: extract the text, hand it off, send back whatever
+// string comes back as a reply. Group messages never reach this handler —
+// see the messages.upsert listener in initWhatsApp for why.
+let directMessageHandler: ((fromJid: string, text: string) => Promise<string | void>) | null = null;
+
+// Registers the function that handles an incoming 1-on-1 WhatsApp DM to the
+// linked number (e.g. the member self-service menu — reset password, update
+// phone/email — see handleWhatsAppDirectMessage in server.ts). Deliberately
+// separate from the group-notification features elsewhere in this file:
+// group messages are never passed here, only direct messages to the linked
+// account itself, since letting arbitrary group chatter trigger account
+// changes would be chaotic and insecure. Call this once at startup, same as
+// initWhatsApp().
+export function onIncomingDirectMessage(handler: (fromJid: string, text: string) => Promise<string | void>): void {
+  directMessageHandler = handler;
+}
+
 // isWhatsAppConfigured() answers "will a notification actually get posted
 // anywhere" — that needs WHATSAPP_GROUP_ID, since without a group to post
 // into there's nowhere for sendWhatsAppDocument to send. It does NOT gate
@@ -110,6 +129,28 @@ export async function initWhatsApp(): Promise<void> {
     });
 
     sock.ev.on("creds.update", saveCreds);
+
+    // Incoming messages — only used for the member self-service DM flow
+    // (see onIncomingDirectMessage above). Group messages are ignored
+    // entirely here; this never reacts to anything posted in
+    // WHATSAPP_GROUP_ID or any other group.
+    sock.ev.on("messages.upsert", async (upsert: any) => {
+      if (!directMessageHandler) return;
+      for (const msg of upsert.messages || []) {
+        try {
+          if (msg.key?.fromMe) continue; // ignore the bot's own messages
+          const fromJid: string | undefined = msg.key?.remoteJid;
+          if (!fromJid || fromJid.endsWith("@g.us") || fromJid === "status@broadcast") continue; // DMs only
+          const text: string =
+            msg.message?.conversation || msg.message?.extendedTextMessage?.text || msg.message?.buttonsResponseMessage?.selectedButtonId || "";
+          if (!text.trim()) continue;
+          const reply = await directMessageHandler(fromJid, text.trim());
+          if (reply) await sock.sendMessage(fromJid, { text: reply });
+        } catch (err) {
+          console.error("[WhatsApp] Failed to handle incoming direct message:", err);
+        }
+      }
+    });
 
     sock.ev.on("connection.update", (update: any) => {
       const { connection, lastDisconnect, qr } = update;

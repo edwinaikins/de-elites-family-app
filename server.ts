@@ -10,7 +10,7 @@ import crypto from "crypto";
 import multer from "multer";
 import nodemailer from "nodemailer";
 import { generateApplicationPdf } from "./pdf";
-import { initWhatsApp, isWhatsAppConfigured, isWhatsAppReady, hasPendingQrCode, listWhatsAppGroups, sendWhatsAppDocument, sendWhatsAppText } from "./whatsapp";
+import { initWhatsApp, isWhatsAppConfigured, isWhatsAppReady, hasPendingQrCode, listWhatsAppGroups, sendWhatsAppDocument, sendWhatsAppText, onIncomingDirectMessage } from "./whatsapp";
 import { PILLARS, LEADERSHIP, GALLERY_ITEMS, DEFAULT_SHOUTOUTS, DEFAULT_MEMBERS, DEFAULT_EVENTS, DEFAULT_HERO } from "./src/data";
 
 const { Pool } = pg;
@@ -587,6 +587,21 @@ initDb();
 // if WHATSAPP_ENABLED=false — see whatsapp.ts for the full explanation of
 // what this is and its tradeoffs.
 initWhatsApp();
+
+// Wires up the member self-service DM flow (reset password, update phone/
+// email — see handleWhatsAppDirectMessage above) to actually incoming
+// WhatsApp messages. The extra try/catch here is a second line of defense
+// on top of the one inside handleWhatsAppDirectMessage itself — a bug in
+// this flow must never crash the WhatsApp connection or the server, and the
+// member should always get SOME reply rather than silence.
+onIncomingDirectMessage(async (fromJid, text) => {
+  try {
+    return await handleWhatsAppDirectMessage(fromJid, text);
+  } catch (err) {
+    console.error("[WhatsApp Self-Service] Failed to handle incoming message:", err);
+    return "Sorry, something went wrong on our end. Please try again in a moment, or contact an admin.";
+  }
+});
 
 // Monthly welfare dues reminders + report — see maybeSendScheduledDuesReport
 // above (day 1 obligation notice, day 15 reminder, a reminder each of the
@@ -1228,6 +1243,202 @@ app.post("/api/member/change-password", requireMemberAuth, async (req: any, res)
     res.status(500).json({ success: false, error: error.message || "Failed to change password." });
   }
 });
+
+// --- Member self-service via WhatsApp DM ---
+//
+// A member can message the linked WhatsApp number directly (never the
+// group) to reset their own password, or update their phone number or
+// email, without needing to already be logged in — handy since a forgotten
+// password is exactly the situation /api/member/change-password above can't
+// help with (it requires knowing the current password).
+//
+// Identity is established purely by matching the sender's WhatsApp phone
+// number against the phone-on-file for an active member — functionally the
+// same trust level as an SMS-based "forgot password" flow: only someone who
+// actually controls that real phone number's WhatsApp account can trigger
+// this. If a member's phone number on file is wrong, outdated, or missing,
+// this won't recognize them — they'd need an admin to fix it (CMS -> Member
+// Accounts) first, or log in with their existing credentials and update it
+// themselves via the portal's Profile tab.
+//
+// This only ever runs over a private 1-on-1 DM to the bot's own linked
+// number — see the messages.upsert listener in whatsapp.ts, which never
+// passes group messages here, so nothing posted in WHATSAPP_GROUP_ID (or
+// any other group that account belongs to) can ever trigger an account
+// change. Registered once at startup via onIncomingDirectMessage, right
+// below initWhatsApp() further down this file.
+
+// Generates a random, readable temporary password — same purpose as the
+// one an admin types by hand in the CMS's member-reset flow, just generated
+// automatically here since there's no admin typing it in during a WhatsApp
+// conversation. Avoids visually ambiguous characters (0/O, 1/l/I) since
+// it'll likely get typed back in by hand on a phone.
+function generateTempPassword(): string {
+  const chars = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
+  const bytes = crypto.randomBytes(10);
+  let out = "";
+  for (let i = 0; i < 10; i++) out += chars[bytes[i] % chars.length];
+  return out;
+}
+
+// The last 9 digits of a phone number, stripped of everything else —
+// invariant whether the number is stored locally ("0244123456") or with a
+// country code ("233244123456"), so this is what lets an incoming WhatsApp
+// sender's number get identity-matched against a member's phone-on-file
+// without caring which format either one happens to be in.
+function phoneLast9Digits(phone: string | null | undefined): string | undefined {
+  if (!phone) return undefined;
+  const digits = phone.replace(/\D/g, "");
+  return digits.length >= 9 ? digits.slice(-9) : undefined;
+}
+
+// Finds the active member whose phone-on-file matches an incoming WhatsApp
+// JID's number (e.g. "233244123456@s.whatsapp.net"). Loads every active
+// member with a phone on file and compares in JS rather than in SQL — the
+// member list here is small, and this sidesteps ever having to normalize
+// formats inside a query.
+async function findMemberByWhatsAppJid(
+  jid: string
+): Promise<{ id: string; fullName: string; username: string; email: string } | undefined> {
+  const senderDigits = phoneLast9Digits(jid.split("@")[0]);
+  if (!senderDigits) return undefined;
+  const db = getPool();
+  const result = await db.query(
+    "SELECT id, full_name, username, email, phone FROM member_accounts WHERE status = 'active' AND phone IS NOT NULL AND phone != ''"
+  );
+  const match = result.rows.find((row: any) => phoneLast9Digits(row.phone) === senderDigits);
+  if (!match) return undefined;
+  return { id: match.id, fullName: match.full_name, username: match.username, email: match.email };
+}
+
+// Normalizes a member-typed phone number into this app's standard local
+// storage format (e.g. "0244123456") — accepts the same shapes
+// phoneToWhatsAppJid tolerates elsewhere in this file (local, or with
+// country code), undefined for anything that doesn't clearly match either.
+function normalizePhoneToLocal(input: string): string | undefined {
+  const digits = input.replace(/\D/g, "");
+  if (digits.length === 10 && digits.startsWith("0")) return digits;
+  if (digits.length === 12 && digits.startsWith("233")) return "0" + digits.slice(3);
+  if (digits.length === 9) return "0" + digits;
+  return undefined;
+}
+
+type WhatsAppSelfServiceStep = "menu" | "awaiting_phone" | "awaiting_email";
+interface WhatsAppSelfServiceState {
+  step: WhatsAppSelfServiceStep;
+  memberId: string;
+  expiresAt: number;
+}
+// In-memory only — these conversations are short-lived (a minute or two of
+// back and forth), so there's no need for this to survive a restart. Keyed
+// by the sender's JID.
+const whatsappSelfServiceState = new Map<string, WhatsAppSelfServiceState>();
+const WHATSAPP_SELF_SERVICE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes idle
+
+function whatsappSelfServiceMenu(fullName: string): string {
+  return `👋 Hi ${fullName}! I'm the DE ELITES FAMILY account assistant.\n\nWhat would you like to do?\n\n1️⃣ Reset my password\n2️⃣ Update my phone number\n3️⃣ Update my email address\n4️⃣ Cancel\n\nJust reply with a number (1-4).`;
+}
+
+// The main entry point — see the onIncomingDirectMessage registration below
+// initWhatsApp() further down this file. Never throws (that registration
+// wraps it in a try/catch too, as a second line of defense) — a bug here
+// must never crash the WhatsApp connection or, worse, the server. Accepts
+// loose matches ("reset", "password", "phone", "email") alongside the exact
+// menu numbers, so it's forgiving of however someone naturally replies.
+async function handleWhatsAppDirectMessage(fromJid: string, text: string): Promise<string> {
+  const now = Date.now();
+  const existing = whatsappSelfServiceState.get(fromJid);
+  if (existing && existing.expiresAt < now) whatsappSelfServiceState.delete(fromJid);
+  const state = whatsappSelfServiceState.get(fromJid);
+  const lower = text.toLowerCase().trim();
+
+  // "cancel" always works, at any step.
+  if (state && /\bcancel\b/.test(lower)) {
+    whatsappSelfServiceState.delete(fromJid);
+    return "👍 No changes made. Message me anytime if you need anything else.";
+  }
+
+  if (!state) {
+    const member = await findMemberByWhatsAppJid(fromJid);
+    if (!member) {
+      return "👋 Hi! I couldn't find a DE ELITES FAMILY member account linked to this WhatsApp number.\n\nIf you're a member, make sure your phone number is saved correctly in the Member Portal (Profile tab), then message me again. Need help? Contact an admin.";
+    }
+    whatsappSelfServiceState.set(fromJid, { step: "menu", memberId: member.id, expiresAt: now + WHATSAPP_SELF_SERVICE_TIMEOUT_MS });
+    return whatsappSelfServiceMenu(member.fullName);
+  }
+
+  const db = getPool();
+
+  if (state.step === "menu") {
+    const choice =
+      lower === "1" || lower.includes("reset") || lower.includes("password")
+        ? "1"
+        : lower === "2" || lower.includes("phone")
+        ? "2"
+        : lower === "3" || lower.includes("email")
+        ? "3"
+        : lower === "4"
+        ? "4"
+        : null;
+
+    if (choice === "1") {
+      const memberRes = await db.query("SELECT full_name, username FROM member_accounts WHERE id = $1", [state.memberId]);
+      const member = memberRes.rows[0];
+      whatsappSelfServiceState.delete(fromJid);
+      if (!member) return "Sorry, I couldn't find your account anymore. Please contact an admin.";
+      const tempPassword = generateTempPassword();
+      const passwordHash = await bcrypt.hash(tempPassword, 10);
+      await db.query("UPDATE member_accounts SET password_hash = $2, must_change_password = true WHERE id = $1", [state.memberId, passwordHash]);
+      console.log(`[WhatsApp Self-Service] Password reset for member ${state.memberId} via WhatsApp DM.`);
+      return `✅ Your password has been reset!\n\nNew temporary password: *${tempPassword}*\n\nLog in at ${getSiteUrl()} with your username (*${member.username}*) and this password — you'll be asked to choose your own password right away.\n\n🔒 Save this now, I won't send it again. Message me anytime for anything else.`;
+    }
+    if (choice === "2") {
+      whatsappSelfServiceState.set(fromJid, { ...state, step: "awaiting_phone", expiresAt: now + WHATSAPP_SELF_SERVICE_TIMEOUT_MS });
+      return "📱 Sure — please send your new phone number (e.g. 0244123456), or reply 'cancel' to stop.";
+    }
+    if (choice === "3") {
+      whatsappSelfServiceState.set(fromJid, { ...state, step: "awaiting_email", expiresAt: now + WHATSAPP_SELF_SERVICE_TIMEOUT_MS });
+      return "📧 Sure — please send your new email address, or reply 'cancel' to stop.";
+    }
+    if (choice === "4") {
+      whatsappSelfServiceState.delete(fromJid);
+      return "👍 No changes made. Message me anytime if you need anything else.";
+    }
+    return "Sorry, I didn't catch that 🤔 Reply with a number:\n\n1️⃣ Reset my password\n2️⃣ Update my phone number\n3️⃣ Update my email address\n4️⃣ Cancel";
+  }
+
+  if (state.step === "awaiting_phone") {
+    const normalized = normalizePhoneToLocal(text.trim());
+    if (!normalized) {
+      return "That doesn't look like a valid phone number. Please send it like 0244123456, or reply 'cancel' to stop.";
+    }
+    await db.query("UPDATE member_accounts SET phone = $2 WHERE id = $1", [state.memberId, normalized]);
+    whatsappSelfServiceState.delete(fromJid);
+    console.log(`[WhatsApp Self-Service] Phone number updated for member ${state.memberId} via WhatsApp DM.`);
+    return `✅ Your phone number has been updated to ${normalized}. Message me anytime for anything else!`;
+  }
+
+  if (state.step === "awaiting_email") {
+    const email = text.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return "That doesn't look like a valid email address. Please send a valid one, or reply 'cancel' to stop.";
+    }
+    const taken = await db.query("SELECT 1 FROM member_accounts WHERE email = $1 AND id != $2", [email, state.memberId]);
+    if ((taken.rowCount ?? 0) > 0) {
+      return "That email is already in use by another account. Please send a different one, or reply 'cancel' to stop.";
+    }
+    await db.query("UPDATE member_accounts SET email = $2 WHERE id = $1", [state.memberId, email]);
+    whatsappSelfServiceState.delete(fromJid);
+    console.log(`[WhatsApp Self-Service] Email updated for member ${state.memberId} via WhatsApp DM.`);
+    return `✅ Your email has been updated to ${email}. This is the address used for your account notifications. Message me anytime for anything else!`;
+  }
+
+  // Shouldn't be reachable, but fall back safely rather than leaving the
+  // member stuck with no response.
+  whatsappSelfServiceState.delete(fromJid);
+  return "Something went off track — message me again to start over.";
+}
+
 
 app.get("/api/member/dues-history", requireMemberAuth, async (req: any, res) => {
   try {

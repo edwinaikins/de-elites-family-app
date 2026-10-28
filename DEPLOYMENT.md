@@ -472,6 +472,65 @@ ever fire once per period — a service restart during a send hour, or the
 15-minute check running more than once inside it, never posts the same
 message twice.
 
+### Member self-service via WhatsApp (reset password, update phone/email)
+
+A member can message the linked WhatsApp number **directly** (a private
+1-on-1 chat with the bot — never the group) to reset their own password, or
+update their phone number or email, without needing to already be logged
+in. This is the main way a locked-out member gets back in, since
+`/api/member/change-password` (the Member Portal's own password form)
+requires already knowing the current password.
+
+**How it identifies them:** purely by matching the WhatsApp number they're
+messaging FROM against the phone number already on file for an active
+member. There's no PIN, code, or extra verification step — the logic is
+that only someone who actually controls that real phone number's WhatsApp
+account could be messaging from it in the first place, which is
+functionally the same trust level as an SMS-based "forgot password" flow
+most apps use. If that feels like the wrong trade-off for how sensitive an
+account here is, the main lever is making sure phone numbers on file are
+accurate — if someone's number is wrong, outdated, or blank, the bot simply
+won't recognize them (it replies saying so), and they'd need an admin to
+fix it in the CMS (Member Accounts tab) first.
+
+**Zero extra configuration** — this works automatically the moment the
+WhatsApp connection is up (same one-time QR setup as above), no new env var
+needed. `WHATSAPP_ENABLED=false` turns it off along with everything else
+WhatsApp-related, since it turns off the connection itself.
+
+**What it looks like**, from the member's side — they message the bot's
+number and get:
+
+```
+👋 Hi Ama! I'm the DE ELITES FAMILY account assistant.
+
+What would you like to do?
+
+1️⃣ Reset my password
+2️⃣ Update my phone number
+3️⃣ Update my email address
+4️⃣ Cancel
+
+Just reply with a number (1-4).
+```
+
+Replying "1" (or just typing "reset" / "password" — it's forgiving about
+exact wording) immediately generates a new temporary password, sends it
+back in that same chat, and flags the account so they're prompted to set
+their own password the moment they next log in — same `must_change_password`
+behavior as an admin-triggered reset. Replying "2" or "3" asks for the new
+phone number or email, validates it (a real-looking number; an email that
+isn't already in use by someone else), and updates it directly. "Cancel"
+backs out at any point. The conversation auto-expires after 10 minutes of
+inactivity, so an old abandoned chat can't unexpectedly resume later.
+
+**Testing it:** from a phone that is NOT the one linked as the bot
+(message the bot's own WhatsApp number from a different phone), and whose
+number matches an existing active member's phone-on-file. Watch
+`journalctl --user -u de-elites-family -f` while you do — every self-service
+action it takes logs a line (without ever logging the password itself), so
+you can confirm it fired without having to take the member's word for it.
+
 ### Mobile Money
 
 Both "Pay Dues" and "Pay & Register" checkouts offer **Mobile Money**
