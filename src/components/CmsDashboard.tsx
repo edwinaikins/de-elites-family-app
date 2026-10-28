@@ -5,12 +5,13 @@ import {
   RefreshCw, Heart, ShieldCheck, Users, Flame,
   Award, Compass, Image, Calendar, Film,
   X, Check, AlertCircle, LogOut, Pencil,
-  UserCheck, Loader2, Mail, Phone, Wallet, Ticket, UserPlus, Download
+  UserCheck, Loader2, Mail, Phone, Wallet, Ticket, UserPlus, Download,
+  Receipt, BarChart3, TrendingDown, TrendingUp,
 } from 'lucide-react';
 import { useCms } from '../context/CmsContext';
 import { ImageUpload } from './ImageUpload';
 import { BulkMediaUpload } from './BulkMediaUpload';
-import { Pillar, Leader, GalleryItem, EliteEvent, MediaItem, HeroConfig, CmsUser, MemberApplication, MemberAccount, WelfareDuesPayment, EventPayment, MemberBill, AdminEventRsvp, AdminPaymentRecord, ManualPaymentInput, AdminPaymentUpdate, MemberSignupRequest } from '../types';
+import { Pillar, Leader, GalleryItem, EliteEvent, MediaItem, HeroConfig, CmsUser, MemberApplication, MemberAccount, WelfareDuesPayment, EventPayment, MemberBill, AdminEventRsvp, AdminPaymentRecord, ManualPaymentInput, AdminPaymentUpdate, MemberSignupRequest, Expenditure, DefaultersReport, FinancialSummaryReport, MemberStatementReport } from '../types';
 import {
   fetchMemberApplications, updateMemberApplicationStatus, deleteMemberApplication, UploadedMediaItem,
   fetchWhatsAppStatus, fetchWhatsAppGroups, resendApplicationNotifications, WhatsAppStatus,
@@ -23,6 +24,8 @@ import {
   createBill, updateBill, deleteBill,
   fetchEventRsvpsAdmin,
   fetchSignupRequests, approveSignupRequest, rejectSignupRequest, deleteSignupRequest,
+  fetchExpenditures, createExpenditure, updateExpenditure, deleteExpenditure,
+  fetchDefaultersReport, fetchFinancialSummaryReport, fetchMemberStatementReport,
 } from '../lib/memberClient';
 
 interface CmsDashboardProps {
@@ -30,7 +33,7 @@ interface CmsDashboardProps {
   onClose: () => void;
 }
 
-type TabType = 'pillars' | 'leaders' | 'gallery' | 'events' | 'hero' | 'users' | 'applications' | 'memberAccounts' | 'payments' | 'signupRequests';
+type TabType = 'pillars' | 'leaders' | 'gallery' | 'events' | 'hero' | 'users' | 'applications' | 'memberAccounts' | 'payments' | 'signupRequests' | 'expenditure' | 'reports';
 
 function currentPeriod(): string {
   const now = new Date();
@@ -166,6 +169,47 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
   const [signupRequestsError, setSignupRequestsError] = useState<string | null>(null);
   const [decidingSignupRequestId, setDecidingSignupRequestId] = useState<string | null>(null);
   const [signupRequestNotice, setSignupRequestNotice] = useState<string | null>(null);
+
+  // Expenditure tab — money going out. editingExpenseId null means the form
+  // is for logging a new expense; set means it's editing that existing row.
+  const [expenditures, setExpenditures] = useState<Expenditure[]>([]);
+  const [expendituresLoading, setExpendituresLoading] = useState(false);
+  const [expendituresError, setExpendituresError] = useState<string | null>(null);
+  const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null);
+  const [expenseDescDraft, setExpenseDescDraft] = useState('');
+  const [expenseCategoryDraft, setExpenseCategoryDraft] = useState('');
+  const [expenseAmountDraft, setExpenseAmountDraft] = useState('');
+  const [expenseCurrencyDraft, setExpenseCurrencyDraft] = useState('');
+  const [expenseDateDraft, setExpenseDateDraft] = useState(() => new Date().toISOString().slice(0, 10));
+  const [expenseFormSaving, setExpenseFormSaving] = useState(false);
+  const [expenseFormError, setExpenseFormError] = useState('');
+
+  // Reports tab — three on-demand reports sharing one tab via a type
+  // selector, each with its own filters/results/loading/error state so
+  // switching between them doesn't lose what's already been run.
+  const [reportType, setReportType] = useState<'defaulters' | 'summary' | 'statement'>('defaulters');
+
+  const [defaultersPeriod, setDefaultersPeriod] = useState(currentPeriod());
+  const [defaultersKind, setDefaultersKind] = useState<'welfare' | 'executive'>('welfare');
+  const [defaultersReport, setDefaultersReport] = useState<DefaultersReport | null>(null);
+  const [defaultersLoading, setDefaultersLoading] = useState(false);
+  const [defaultersError, setDefaultersError] = useState('');
+
+  const [summaryFrom, setSummaryFrom] = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
+  });
+  const [summaryTo, setSummaryTo] = useState(() => new Date().toISOString().slice(0, 10));
+  const [summaryReport, setSummaryReport] = useState<FinancialSummaryReport | null>(null);
+  const [summaryLoading, setSummaryLoading] = useState(false);
+  const [summaryError, setSummaryError] = useState('');
+
+  const [statementMemberId, setStatementMemberId] = useState('');
+  const [statementFrom, setStatementFrom] = useState('');
+  const [statementTo, setStatementTo] = useState('');
+  const [statementReport, setStatementReport] = useState<MemberStatementReport | null>(null);
+  const [statementLoading, setStatementLoading] = useState(false);
+  const [statementError, setStatementError] = useState('');
 
   // "Log Manual Payment" form — for cash, bank transfer, or any payment
   // collected outside Paystack, so it still shows up in reconciliation.
@@ -345,6 +389,191 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
     } catch (err: any) {
       setSignupRequestsError(err.message || 'Failed to delete signup request.');
     }
+  };
+
+  // Load expenditures when that tab is opened
+  React.useEffect(() => {
+    if (isOpen && activeTab === 'expenditure') {
+      setExpendituresLoading(true);
+      setExpendituresError(null);
+      fetchExpenditures()
+        .then(setExpenditures)
+        .catch((err: any) => setExpendituresError(err.message || 'Failed to load expenditures'))
+        .finally(() => setExpendituresLoading(false));
+    }
+  }, [isOpen, activeTab]);
+
+  // Reports tab also needs the member list (for the statement report's
+  // member picker) even if the admin never visited Member Accounts first.
+  React.useEffect(() => {
+    if (isOpen && activeTab === 'reports' && memberAccounts.length === 0) {
+      loadMemberAccounts();
+    }
+  }, [isOpen, activeTab]);
+
+  const resetExpenseForm = () => {
+    setEditingExpenseId(null);
+    setExpenseDescDraft('');
+    setExpenseCategoryDraft('');
+    setExpenseAmountDraft('');
+    setExpenseCurrencyDraft('');
+    setExpenseDateDraft(new Date().toISOString().slice(0, 10));
+    setExpenseFormError('');
+  };
+
+  const handleStartEditExpense = (e: Expenditure) => {
+    setEditingExpenseId(e.id);
+    setExpenseDescDraft(e.description);
+    setExpenseCategoryDraft(e.category);
+    setExpenseAmountDraft(String(e.amount));
+    setExpenseCurrencyDraft(e.currency);
+    setExpenseDateDraft(e.date);
+    setExpenseFormError('');
+  };
+
+  const handleSaveExpense = async () => {
+    setExpenseFormError('');
+    const amount = Number(expenseAmountDraft);
+    if (!expenseDescDraft.trim()) {
+      setExpenseFormError('A description is required.');
+      return;
+    }
+    if (!expenseCategoryDraft.trim()) {
+      setExpenseFormError('A category is required.');
+      return;
+    }
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setExpenseFormError('Enter a valid amount greater than zero.');
+      return;
+    }
+    if (!expenseDateDraft) {
+      setExpenseFormError('A date is required.');
+      return;
+    }
+    setExpenseFormSaving(true);
+    try {
+      const payload = {
+        description: expenseDescDraft.trim(),
+        category: expenseCategoryDraft.trim(),
+        amount,
+        currency: expenseCurrencyDraft.trim() || undefined,
+        date: expenseDateDraft,
+      };
+      if (editingExpenseId) {
+        const updated = await updateExpenditure(editingExpenseId, payload);
+        setExpenditures((prev) => prev.map((x) => (x.id === editingExpenseId ? updated : x)));
+      } else {
+        const created = await createExpenditure(payload);
+        setExpenditures((prev) => [created, ...prev]);
+      }
+      resetExpenseForm();
+    } catch (err: any) {
+      setExpenseFormError(err.message || 'Failed to save expense.');
+    } finally {
+      setExpenseFormSaving(false);
+    }
+  };
+
+  const handleDeleteExpense = async (e: Expenditure) => {
+    if (!window.confirm(`Delete this expense — "${e.description}" (${e.currency} ${e.amount.toFixed(2)})? This cannot be undone.`)) return;
+    try {
+      await deleteExpenditure(e.id);
+      setExpenditures((prev) => prev.filter((x) => x.id !== e.id));
+      if (editingExpenseId === e.id) resetExpenseForm();
+    } catch (err: any) {
+      setExpendituresError(err.message || 'Failed to delete expense.');
+    }
+  };
+
+  const expenditureTotalsByCurrency = React.useMemo(() => {
+    const totals: Record<string, number> = {};
+    for (const e of expenditures) totals[e.currency] = (totals[e.currency] || 0) + e.amount;
+    return Object.entries(totals).map(([currency, total]) => ({ currency, total }));
+  }, [expenditures]);
+
+  // --- Reports ---
+
+  const escapeCsv = (value: string) => `"${String(value).replace(/"/g, '""')}"`;
+  const downloadCsv = (filename: string, header: string[], rows: string[][]) => {
+    const csv = [header.map(escapeCsv).join(','), ...rows.map((r) => r.map((v) => escapeCsv(v)).join(','))].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleRunDefaultersReport = async () => {
+    setDefaultersError('');
+    setDefaultersLoading(true);
+    try {
+      setDefaultersReport(await fetchDefaultersReport(defaultersPeriod, defaultersKind));
+    } catch (err: any) {
+      setDefaultersError(err.message || 'Failed to generate report.');
+    } finally {
+      setDefaultersLoading(false);
+    }
+  };
+
+  const handleExportDefaultersCsv = () => {
+    if (!defaultersReport) return;
+    downloadCsv(
+      `de-elites-defaulters-${defaultersReport.kind}-${defaultersReport.period}.csv`,
+      ['Member', 'Email', 'Phone', 'Dues Amount', 'Paid', 'Outstanding', 'Currency'],
+      defaultersReport.rows.map((r) => [
+        r.fullName, r.email || '', r.phone || '', r.duesAmount.toFixed(2), r.paid.toFixed(2), r.outstanding.toFixed(2), r.currency,
+      ])
+    );
+  };
+
+  const handleRunSummaryReport = async () => {
+    setSummaryError('');
+    setSummaryLoading(true);
+    try {
+      setSummaryReport(await fetchFinancialSummaryReport(summaryFrom, summaryTo));
+    } catch (err: any) {
+      setSummaryError(err.message || 'Failed to generate report.');
+    } finally {
+      setSummaryLoading(false);
+    }
+  };
+
+  const handleExportSummaryCsv = () => {
+    if (!summaryReport) return;
+    const rows: string[][] = [
+      ...summaryReport.incomeByType.map((r) => ['Income', r.type, r.total.toFixed(2), r.currency]),
+      ...summaryReport.expenditureByCategory.map((r) => ['Expenditure', r.category, r.total.toFixed(2), r.currency]),
+    ];
+    downloadCsv(`de-elites-financial-summary-${summaryReport.from}-to-${summaryReport.to}.csv`, ['Kind', 'Type/Category', 'Total', 'Currency'], rows);
+  };
+
+  const handleRunStatementReport = async () => {
+    if (!statementMemberId) {
+      setStatementError('Pick a member first.');
+      return;
+    }
+    setStatementError('');
+    setStatementLoading(true);
+    try {
+      setStatementReport(await fetchMemberStatementReport(statementMemberId, statementFrom || undefined, statementTo || undefined));
+    } catch (err: any) {
+      setStatementError(err.message || 'Failed to generate report.');
+    } finally {
+      setStatementLoading(false);
+    }
+  };
+
+  const handleExportStatementCsv = () => {
+    if (!statementReport) return;
+    downloadCsv(
+      `de-elites-statement-${statementReport.memberName.replace(/\s+/g, '-').toLowerCase()}.csv`,
+      ['Date', 'Type', 'Details', 'Amount', 'Currency', 'Status', 'Channel'],
+      statementReport.rows.map((r) => [
+        new Date(r.createdAt).toISOString(), r.type, r.label, r.amount.toFixed(2), r.currency, r.status, r.channel || '',
+      ])
+    );
   };
 
   const filteredPayments = React.useMemo(() => {
@@ -1192,7 +1421,9 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                 { type: 'applications', label: '7. Applications', count: applications.length, desc: 'Prospective Members' },
                 { type: 'memberAccounts', label: '8. Member Accounts', count: memberAccounts.length, desc: 'Portal Logins & Dues' },
                 { type: 'payments', label: '9. Payments', count: payments.length, desc: 'Reconciliation & Exports' },
-                { type: 'signupRequests', label: '10. Signup Requests', count: signupRequests.filter((r) => r.status === 'pending').length, desc: 'WhatsApp Join Requests' }
+                { type: 'signupRequests', label: '10. Signup Requests', count: signupRequests.filter((r) => r.status === 'pending').length, desc: 'WhatsApp Join Requests' },
+                { type: 'expenditure', label: '11. Expenditure', count: expenditures.length, desc: 'Money Spent' },
+                { type: 'reports', label: '12. Reports', count: 0, desc: 'Defaulters & Financials' }
               ].map((item) => (
                 <button
                   key={item.type}
@@ -1211,9 +1442,11 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                       {item.desc}
                     </span>
                   </div>
-                  <span className="font-mono text-[10px] bg-black/60 text-gray-400 px-2 py-0.5 rounded border border-gray-900 font-bold">
-                    {item.count}
-                  </span>
+                  {item.type !== 'reports' && (
+                    <span className="font-mono text-[10px] bg-black/60 text-gray-400 px-2 py-0.5 rounded border border-gray-900 font-bold">
+                      {item.count}
+                    </span>
+                  )}
                 </button>
               ))}
             </div>
@@ -1235,7 +1468,7 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
 
               {/* Action and Save buttons */}
               <div className="flex items-center gap-3">
-                {activeTab !== 'pillars' && activeTab !== 'hero' && activeTab !== 'applications' && activeTab !== 'memberAccounts' && activeTab !== 'signupRequests' && (
+                {activeTab !== 'pillars' && activeTab !== 'hero' && activeTab !== 'applications' && activeTab !== 'memberAccounts' && activeTab !== 'signupRequests' && activeTab !== 'expenditure' && activeTab !== 'reports' && (
                   <button
                     onClick={() => {
                       if (activeTab === 'leaders') handleAddLeader();
@@ -1250,6 +1483,7 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                 )}
 
                 {activeTab !== 'applications' && activeTab !== 'memberAccounts' && activeTab !== 'signupRequests' &&
+                 activeTab !== 'expenditure' && activeTab !== 'reports' &&
                  activeTab !== 'leaders' && activeTab !== 'gallery' && activeTab !== 'events' && (
                   <button
                     onClick={() => handleSaveSection(activeTab)}
@@ -3814,6 +4048,529 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                           })}
                         </tbody>
                       </table>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {activeTab === 'expenditure' && (
+                <div className="flex-1 overflow-y-auto max-w-5xl w-full mx-auto space-y-4">
+                  <datalist id="expenditure-category-options">
+                    {Array.from(new Set(expenditures.map((e) => e.category).filter(Boolean))).map((cat) => (
+                      <option key={cat} value={cat} />
+                    ))}
+                  </datalist>
+
+                  <div className="bg-charcoal-card rounded-lg border border-gray-900 p-5 space-y-3">
+                    <h4 className="font-display text-xs font-black text-luxury-gold uppercase tracking-widest">
+                      {editingExpenseId ? 'Edit Expense' : 'Log a New Expense'}
+                    </h4>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                      <div className="flex flex-col gap-1 lg:col-span-2">
+                        <label className="font-sans text-[9px] font-black uppercase tracking-widest text-gray-500">Description</label>
+                        <input
+                          type="text"
+                          value={expenseDescDraft}
+                          onChange={(e) => setExpenseDescDraft(e.target.value)}
+                          placeholder="e.g. Venue rental for AGM"
+                          className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold"
+                        />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <label className="font-sans text-[9px] font-black uppercase tracking-widest text-gray-500">Category</label>
+                        <input
+                          type="text"
+                          list="expenditure-category-options"
+                          value={expenseCategoryDraft}
+                          onChange={(e) => setExpenseCategoryDraft(e.target.value)}
+                          placeholder="e.g. Events"
+                          className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold"
+                        />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <label className="font-sans text-[9px] font-black uppercase tracking-widest text-gray-500">Date</label>
+                        <input
+                          type="date"
+                          value={expenseDateDraft}
+                          onChange={(e) => setExpenseDateDraft(e.target.value)}
+                          className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold"
+                        />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <label className="font-sans text-[9px] font-black uppercase tracking-widest text-gray-500">Amount</label>
+                        <input
+                          type="number"
+                          value={expenseAmountDraft}
+                          onChange={(e) => setExpenseAmountDraft(e.target.value)}
+                          placeholder="0.00"
+                          className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold"
+                        />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <label className="font-sans text-[9px] font-black uppercase tracking-widest text-gray-500">Currency</label>
+                        <input
+                          type="text"
+                          value={expenseCurrencyDraft}
+                          onChange={(e) => setExpenseCurrencyDraft(e.target.value)}
+                          placeholder={memberAccounts[0]?.currency || 'GHS'}
+                          className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold"
+                        />
+                      </div>
+                    </div>
+
+                    {expenseFormError && (
+                      <div className="flex items-center gap-2 text-[10px] text-red-500 bg-red-500/10 border border-red-500/20 p-2.5 rounded">
+                        <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                        <span>{expenseFormError}</span>
+                      </div>
+                    )}
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={handleSaveExpense}
+                        disabled={expenseFormSaving}
+                        className="px-4 py-2 bg-gradient-to-r from-luxury-gold to-luxury-gold-dark text-black font-sans font-black tracking-widest text-[10px] uppercase rounded transition-all disabled:opacity-50 flex items-center gap-2 cursor-pointer"
+                      >
+                        {expenseFormSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                        {editingExpenseId ? 'Save Changes' : 'Log Expense'}
+                      </button>
+                      {editingExpenseId && (
+                        <button
+                          type="button"
+                          onClick={resetExpenseForm}
+                          className="px-4 py-2 border border-gray-800 text-gray-400 font-sans font-black tracking-widest text-[10px] uppercase rounded hover:text-white hover:border-gray-700 transition-colors cursor-pointer"
+                        >
+                          Cancel
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {expenditureTotalsByCurrency.length > 0 && (
+                    <div className="flex flex-wrap gap-2">
+                      {expenditureTotalsByCurrency.map((entry) => (
+                        <span
+                          key={entry.currency}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-red-950/20 border border-red-900/40 text-red-400 text-[10px] font-mono font-bold"
+                        >
+                          <TrendingDown className="w-3 h-3" />
+                          Spent: {entry.currency} {entry.total.toFixed(2)}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  {expendituresError && (
+                    <div className="flex items-center gap-2 text-xs text-red-500 bg-red-500/10 border border-red-500/20 p-3 rounded">
+                      <AlertCircle className="w-4 h-4 shrink-0" />
+                      <span>{expendituresError}</span>
+                    </div>
+                  )}
+
+                  {expendituresLoading ? (
+                    <div className="py-16 text-center text-gray-500 text-xs flex flex-col items-center gap-2">
+                      <Loader2 className="w-6 h-6 animate-spin text-luxury-gold/50" />
+                      Loading expenditures...
+                    </div>
+                  ) : expenditures.length === 0 ? (
+                    <div className="py-16 text-center text-gray-500 text-xs">
+                      <Receipt className="w-8 h-8 text-luxury-gold/25 mx-auto mb-3" />
+                      No expenses logged yet.
+                    </div>
+                  ) : (
+                    <div className="bg-charcoal-card rounded-lg border border-gray-900 overflow-x-auto">
+                      <table className="w-full text-left text-xs min-w-[640px]">
+                        <thead>
+                          <tr className="border-b border-gray-900 text-[9px] font-black uppercase tracking-widest text-gray-500">
+                            <th className="px-4 py-3">Date</th>
+                            <th className="px-4 py-3">Description</th>
+                            <th className="px-4 py-3">Category</th>
+                            <th className="px-4 py-3 text-right">Amount</th>
+                            <th className="px-4 py-3 text-right">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {expenditures.map((e) => (
+                            <tr key={e.id} className="border-b border-gray-900/60 hover:bg-jet-black/60 transition-colors">
+                              <td className="px-4 py-3 font-mono text-[10px] text-gray-500 whitespace-nowrap">
+                                {new Date(e.date).toLocaleDateString()}
+                              </td>
+                              <td className="px-4 py-3 text-white max-w-[260px] truncate">{e.description}</td>
+                              <td className="px-4 py-3 text-gray-400">{e.category}</td>
+                              <td className="px-4 py-3 text-right font-mono text-gray-200 whitespace-nowrap">
+                                {e.currency} {e.amount.toFixed(2)}
+                              </td>
+                              <td className="px-4 py-3 text-right">
+                                <div className="flex items-center justify-end gap-1.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleStartEditExpense(e)}
+                                    className="inline-flex items-center justify-center p-1.5 rounded border border-gray-800 text-gray-500 hover:text-luxury-gold hover:border-luxury-gold/60 hover:bg-luxury-gold/10 transition-colors"
+                                    title="Edit expense"
+                                  >
+                                    <Pencil size={12} />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDeleteExpense(e)}
+                                    className="inline-flex items-center justify-center p-1.5 rounded border border-gray-800 text-gray-500 hover:text-red-400 hover:border-red-900/60 hover:bg-red-950/20 transition-colors"
+                                    title="Delete expense"
+                                  >
+                                    <Trash2 size={12} />
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {activeTab === 'reports' && (
+                <div className="flex-1 overflow-y-auto max-w-5xl w-full mx-auto space-y-4">
+                  <div className="flex gap-2">
+                    {[
+                      { key: 'defaulters' as const, label: 'Defaulters', icon: Users },
+                      { key: 'summary' as const, label: 'Income vs. Expenditure', icon: BarChart3 },
+                      { key: 'statement' as const, label: 'Member Statement', icon: Receipt },
+                    ].map((t) => (
+                      <button
+                        key={t.key}
+                        onClick={() => setReportType(t.key)}
+                        className={`flex items-center gap-1.5 px-3 py-2 rounded text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer border ${
+                          reportType === t.key
+                            ? 'bg-luxury-gold/10 text-luxury-gold border-luxury-gold/30'
+                            : 'text-gray-500 border-gray-900 hover:text-gray-300 hover:bg-gray-900/40'
+                        }`}
+                      >
+                        <t.icon className="w-3.5 h-3.5" />
+                        {t.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  {reportType === 'defaulters' && (
+                    <div className="bg-charcoal-card rounded-lg border border-gray-900 p-5 space-y-4">
+                      <div className="flex flex-wrap items-end gap-3">
+                        <div className="flex flex-col gap-1">
+                          <label className="font-sans text-[9px] font-black uppercase tracking-widest text-gray-500">Period</label>
+                          <input
+                            type="month"
+                            value={defaultersPeriod}
+                            onChange={(e) => setDefaultersPeriod(e.target.value)}
+                            className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold"
+                          />
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          <label className="font-sans text-[9px] font-black uppercase tracking-widest text-gray-500">Dues Kind</label>
+                          <select
+                            value={defaultersKind}
+                            onChange={(e) => setDefaultersKind(e.target.value as 'welfare' | 'executive')}
+                            className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold"
+                          >
+                            <option value="welfare">Welfare Dues</option>
+                            <option value="executive">Executive Dues</option>
+                          </select>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleRunDefaultersReport}
+                          disabled={defaultersLoading}
+                          className="px-4 py-2.5 bg-gradient-to-r from-luxury-gold to-luxury-gold-dark text-black font-sans font-black tracking-widest text-[10px] uppercase rounded transition-all disabled:opacity-50 flex items-center gap-2 cursor-pointer"
+                        >
+                          {defaultersLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <BarChart3 className="w-3.5 h-3.5" />}
+                          Run Report
+                        </button>
+                        {defaultersReport && defaultersReport.rows.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={handleExportDefaultersCsv}
+                            className="px-4 py-2.5 border border-gray-800 text-gray-300 font-sans font-black tracking-widest text-[10px] uppercase rounded hover:border-luxury-gold/50 hover:text-luxury-gold transition-colors flex items-center gap-2 cursor-pointer"
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                            Download CSV
+                          </button>
+                        )}
+                      </div>
+
+                      {defaultersError && (
+                        <div className="flex items-center gap-2 text-[10px] text-red-500 bg-red-500/10 border border-red-500/20 p-2.5 rounded">
+                          <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                          <span>{defaultersError}</span>
+                        </div>
+                      )}
+
+                      {defaultersReport && (
+                        <>
+                          <div className="flex flex-wrap gap-2">
+                            <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-green-950/20 border border-green-900/40 text-green-400 text-[10px] font-mono font-bold">
+                              {defaultersReport.paidCount} fully paid
+                            </span>
+                            <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-red-950/20 border border-red-900/40 text-red-400 text-[10px] font-mono font-bold">
+                              {defaultersReport.unpaidCount} owing
+                            </span>
+                            {defaultersReport.totalOutstandingByCurrency.map((t) => (
+                              <span key={t.currency} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-jet-black border border-gray-800 text-gray-300 text-[10px] font-mono font-bold">
+                                Outstanding: {t.currency} {t.total.toFixed(2)}
+                              </span>
+                            ))}
+                          </div>
+
+                          {defaultersReport.rows.length === 0 ? (
+                            <div className="py-12 text-center text-gray-500 text-xs">
+                              Everyone's paid up for {formatPeriodLabel(defaultersReport.period)} 🎉
+                            </div>
+                          ) : (
+                            <div className="overflow-x-auto">
+                              <table className="w-full text-left text-xs min-w-[560px]">
+                                <thead>
+                                  <tr className="border-b border-gray-900 text-[9px] font-black uppercase tracking-widest text-gray-500">
+                                    <th className="px-3 py-2">Member</th>
+                                    <th className="px-3 py-2">Phone</th>
+                                    <th className="px-3 py-2 text-right">Owes</th>
+                                    <th className="px-3 py-2 text-right">Paid</th>
+                                    <th className="px-3 py-2 text-right">Outstanding</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {defaultersReport.rows.map((r) => (
+                                    <tr key={r.memberId} className="border-b border-gray-900/60">
+                                      <td className="px-3 py-2.5 text-white font-bold">{r.fullName}</td>
+                                      <td className="px-3 py-2.5 text-gray-400">{r.phone || '—'}</td>
+                                      <td className="px-3 py-2.5 text-right font-mono text-gray-300">{r.currency} {r.duesAmount.toFixed(2)}</td>
+                                      <td className="px-3 py-2.5 text-right font-mono text-gray-300">{r.currency} {r.paid.toFixed(2)}</td>
+                                      <td className="px-3 py-2.5 text-right font-mono text-red-400 font-bold">{r.currency} {r.outstanding.toFixed(2)}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  )}
+
+                  {reportType === 'summary' && (
+                    <div className="bg-charcoal-card rounded-lg border border-gray-900 p-5 space-y-4">
+                      <div className="flex flex-wrap items-end gap-3">
+                        <div className="flex flex-col gap-1">
+                          <label className="font-sans text-[9px] font-black uppercase tracking-widest text-gray-500">From</label>
+                          <input
+                            type="date"
+                            value={summaryFrom}
+                            onChange={(e) => setSummaryFrom(e.target.value)}
+                            className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold"
+                          />
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          <label className="font-sans text-[9px] font-black uppercase tracking-widest text-gray-500">To</label>
+                          <input
+                            type="date"
+                            value={summaryTo}
+                            onChange={(e) => setSummaryTo(e.target.value)}
+                            className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold"
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleRunSummaryReport}
+                          disabled={summaryLoading}
+                          className="px-4 py-2.5 bg-gradient-to-r from-luxury-gold to-luxury-gold-dark text-black font-sans font-black tracking-widest text-[10px] uppercase rounded transition-all disabled:opacity-50 flex items-center gap-2 cursor-pointer"
+                        >
+                          {summaryLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <BarChart3 className="w-3.5 h-3.5" />}
+                          Run Report
+                        </button>
+                        {summaryReport && (
+                          <button
+                            type="button"
+                            onClick={handleExportSummaryCsv}
+                            className="px-4 py-2.5 border border-gray-800 text-gray-300 font-sans font-black tracking-widest text-[10px] uppercase rounded hover:border-luxury-gold/50 hover:text-luxury-gold transition-colors flex items-center gap-2 cursor-pointer"
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                            Download CSV
+                          </button>
+                        )}
+                      </div>
+
+                      {summaryError && (
+                        <div className="flex items-center gap-2 text-[10px] text-red-500 bg-red-500/10 border border-red-500/20 p-2.5 rounded">
+                          <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                          <span>{summaryError}</span>
+                        </div>
+                      )}
+
+                      {summaryReport && (
+                        <>
+                          <div className="flex flex-wrap gap-2">
+                            {summaryReport.netTotals.map((t) => (
+                              <span
+                                key={t.currency}
+                                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded border text-[10px] font-mono font-bold ${
+                                  t.total >= 0 ? 'bg-green-950/20 border-green-900/40 text-green-400' : 'bg-red-950/20 border-red-900/40 text-red-400'
+                                }`}
+                              >
+                                {t.total >= 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
+                                Net: {t.currency} {t.total.toFixed(2)}
+                              </span>
+                            ))}
+                          </div>
+
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                              <h5 className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400 mb-2">
+                                Income by Type
+                              </h5>
+                              {summaryReport.incomeByType.length === 0 ? (
+                                <p className="text-[11px] text-gray-600">No income recorded in this range.</p>
+                              ) : (
+                                <div className="space-y-1.5">
+                                  {summaryReport.incomeByType.map((r, i) => (
+                                    <div key={i} className="flex items-center justify-between bg-jet-black border border-gray-900 rounded px-3 py-2 text-xs">
+                                      <span className="text-gray-300">{r.type === 'executive-dues' ? 'exec dues' : r.type}</span>
+                                      <span className="font-mono text-green-400 font-bold">{r.currency} {r.total.toFixed(2)}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                            <div>
+                              <h5 className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400 mb-2">
+                                Expenditure by Category
+                              </h5>
+                              {summaryReport.expenditureByCategory.length === 0 ? (
+                                <p className="text-[11px] text-gray-600">No expenditure recorded in this range.</p>
+                              ) : (
+                                <div className="space-y-1.5">
+                                  {summaryReport.expenditureByCategory.map((r, i) => (
+                                    <div key={i} className="flex items-center justify-between bg-jet-black border border-gray-900 rounded px-3 py-2 text-xs">
+                                      <span className="text-gray-300">{r.category}</span>
+                                      <span className="font-mono text-red-400 font-bold">{r.currency} {r.total.toFixed(2)}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
+
+                  {reportType === 'statement' && (
+                    <div className="bg-charcoal-card rounded-lg border border-gray-900 p-5 space-y-4">
+                      <div className="flex flex-wrap items-end gap-3">
+                        <div className="flex flex-col gap-1 min-w-[200px]">
+                          <label className="font-sans text-[9px] font-black uppercase tracking-widest text-gray-500">Member</label>
+                          <select
+                            value={statementMemberId}
+                            onChange={(e) => setStatementMemberId(e.target.value)}
+                            className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold"
+                          >
+                            <option value="">Select a member…</option>
+                            {memberAccounts.map((m) => (
+                              <option key={m.id} value={m.id}>{m.fullName}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          <label className="font-sans text-[9px] font-black uppercase tracking-widest text-gray-500">From (optional)</label>
+                          <input
+                            type="date"
+                            value={statementFrom}
+                            onChange={(e) => setStatementFrom(e.target.value)}
+                            className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold"
+                          />
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          <label className="font-sans text-[9px] font-black uppercase tracking-widest text-gray-500">To (optional)</label>
+                          <input
+                            type="date"
+                            value={statementTo}
+                            onChange={(e) => setStatementTo(e.target.value)}
+                            className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold"
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleRunStatementReport}
+                          disabled={statementLoading}
+                          className="px-4 py-2.5 bg-gradient-to-r from-luxury-gold to-luxury-gold-dark text-black font-sans font-black tracking-widest text-[10px] uppercase rounded transition-all disabled:opacity-50 flex items-center gap-2 cursor-pointer"
+                        >
+                          {statementLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <BarChart3 className="w-3.5 h-3.5" />}
+                          Run Report
+                        </button>
+                        {statementReport && statementReport.rows.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={handleExportStatementCsv}
+                            className="px-4 py-2.5 border border-gray-800 text-gray-300 font-sans font-black tracking-widest text-[10px] uppercase rounded hover:border-luxury-gold/50 hover:text-luxury-gold transition-colors flex items-center gap-2 cursor-pointer"
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                            Download CSV
+                          </button>
+                        )}
+                      </div>
+
+                      {statementError && (
+                        <div className="flex items-center gap-2 text-[10px] text-red-500 bg-red-500/10 border border-red-500/20 p-2.5 rounded">
+                          <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                          <span>{statementError}</span>
+                        </div>
+                      )}
+
+                      {statementReport && (
+                        <>
+                          <div className="flex flex-wrap gap-2">
+                            {statementReport.totalsByCurrency.map((t) => (
+                              <span key={t.currency} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-green-950/20 border border-green-900/40 text-green-400 text-[10px] font-mono font-bold">
+                                Total paid: {t.currency} {t.total.toFixed(2)}
+                              </span>
+                            ))}
+                          </div>
+
+                          {statementReport.rows.length === 0 ? (
+                            <div className="py-12 text-center text-gray-500 text-xs">No payment history for this member in this range.</div>
+                          ) : (
+                            <div className="overflow-x-auto">
+                              <table className="w-full text-left text-xs min-w-[560px]">
+                                <thead>
+                                  <tr className="border-b border-gray-900 text-[9px] font-black uppercase tracking-widest text-gray-500">
+                                    <th className="px-3 py-2">Date</th>
+                                    <th className="px-3 py-2">Type</th>
+                                    <th className="px-3 py-2">Details</th>
+                                    <th className="px-3 py-2 text-right">Amount</th>
+                                    <th className="px-3 py-2 text-right">Status</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {statementReport.rows.map((r) => (
+                                    <tr key={`${r.type}-${r.id}`} className="border-b border-gray-900/60">
+                                      <td className="px-3 py-2.5 font-mono text-[10px] text-gray-500 whitespace-nowrap">
+                                        {new Date(r.createdAt).toLocaleDateString()}
+                                      </td>
+                                      <td className="px-3 py-2.5 text-gray-300">{r.type === 'executive-dues' ? 'exec dues' : r.type}</td>
+                                      <td className="px-3 py-2.5 text-gray-300">
+                                        {(r.type === 'dues' || r.type === 'executive-dues') ? formatPeriodLabel(r.label) : r.label}
+                                      </td>
+                                      <td className="px-3 py-2.5 text-right font-mono text-gray-200">{r.currency} {r.amount.toFixed(2)}</td>
+                                      <td className="px-3 py-2.5 text-right">
+                                        <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded border ${statusBadgeClass(r.status)}`}>
+                                          {r.status}
+                                        </span>
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+                        </>
+                      )}
                     </div>
                   )}
                 </div>

@@ -1,4 +1,4 @@
-import { MemberAccount, MemberProfileUpdate, WelfareDuesPayment, EventPayment, MemberBill, EventRsvp, EventRsvpResponse, AdminEventRsvp, PaymentInitResponse, DuesBalance, AdminPaymentRecord, ManualPaymentInput, AdminPaymentUpdate, MemberSignupRequest } from '../types';
+import { MemberAccount, MemberProfileUpdate, WelfareDuesPayment, EventPayment, MemberBill, EventRsvp, EventRsvpResponse, AdminEventRsvp, PaymentInitResponse, DuesBalance, AdminPaymentRecord, ManualPaymentInput, AdminPaymentUpdate, MemberSignupRequest, Expenditure, ExpenditureInput, DefaultersReport, FinancialSummaryReport, MemberStatementReport } from '../types';
 
 async function handleJson<T>(res: Response): Promise<T> {
   const result = await res.json().catch(() => ({}));
@@ -370,4 +370,59 @@ export async function updateBill(
 export async function deleteBill(id: string): Promise<void> {
   const res = await fetch(`/api/admin/bills/${encodeURIComponent(id)}`, { method: 'DELETE' });
   await handleJson(res);
+}
+
+// --- Admin: expenditure ---
+
+export async function fetchExpenditures(): Promise<Expenditure[]> {
+  const res = await fetch('/api/admin/expenditures');
+  return handleJson(res);
+}
+
+export async function createExpenditure(input: ExpenditureInput): Promise<Expenditure> {
+  const res = await fetch('/api/admin/expenditures', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  return handleJson(res);
+}
+
+export async function updateExpenditure(id: string, update: ExpenditureInput): Promise<Expenditure> {
+  const res = await fetch(`/api/admin/expenditures/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(update),
+  });
+  return handleJson(res);
+}
+
+export async function deleteExpenditure(id: string): Promise<void> {
+  const res = await fetch(`/api/admin/expenditures/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  await handleJson(res);
+}
+
+// --- Admin: reports ---
+
+export async function fetchDefaultersReport(period: string, kind: 'welfare' | 'executive'): Promise<DefaultersReport> {
+  const res = await fetch(`/api/admin/reports/defaulters?period=${encodeURIComponent(period)}&kind=${encodeURIComponent(kind)}`);
+  return handleJson(res);
+}
+
+export async function fetchFinancialSummaryReport(from: string, to: string): Promise<FinancialSummaryReport> {
+  const res = await fetch(`/api/admin/reports/financial-summary?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
+  return handleJson(res);
+}
+
+export async function fetchMemberStatementReport(
+  memberId: string,
+  from?: string,
+  to?: string
+): Promise<MemberStatementReport> {
+  const params = new URLSearchParams();
+  if (from) params.set('from', from);
+  if (to) params.set('to', to);
+  const qs = params.toString();
+  const res = await fetch(`/api/admin/reports/member-statement/${encodeURIComponent(memberId)}${qs ? `?${qs}` : ''}`);
+  return handleJson(res);
 }

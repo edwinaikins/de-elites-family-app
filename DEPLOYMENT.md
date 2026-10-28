@@ -730,6 +730,38 @@ CMS disagree with what the gateway really processed. If a real Paystack
 payment needs correcting, delete it and re-log the correct amount manually
 instead (or issue a refund through Paystack directly, outside this app).
 
+### Expenditure tracking + Reports (defaulters, income/expense, statements)
+
+The CMS now tracks money going **out**, not just money coming in, and gives
+you a reports screen to make sense of both.
+
+**11. Expenditure (CMS tab):** log any expense with a description, category,
+amount/currency, and date. Categories are free text with autocomplete (type
+a new one and it just works — no fixed list to maintain), mirroring how
+Gallery categories work elsewhere in the app. Totals are shown broken down
+by currency at the top of the tab, since members can be on different
+currencies. Edit or delete any entry with the pencil/trash icons on its row.
+
+**12. Reports (CMS tab):** three on-demand reports, each with a **Download
+CSV** button once you've run it:
+
+- **Defaulters** — pick a month and "welfare" or "executive" dues, and it
+  lists every member who hasn't fully paid that period's dues, with how
+  much they owe vs. paid, plus paid/unpaid counts and total outstanding by
+  currency. This reuses the same numbers as the WhatsApp monthly dues
+  reminder, so it always matches what members are being chased for.
+- **Income vs. Expenditure Summary** — pick a date range and see total
+  income (dues, event payments, bills) broken down by type, total
+  expenditure broken down by category, and the net (income minus
+  expenditure) for each currency in use.
+- **Member Statement** — pick a member and (optionally) a date range to see
+  every payment they've ever made — dues, event tickets, bills — with
+  status and running total, by currency. Useful for answering "has this
+  member actually paid?" without digging through the Payments tab.
+
+All three reports query live data — there's nothing to "generate" or store
+ahead of time; they run fresh each time you click **Run Report**.
+
 ## Domain: de-elitesfamily.org
 
 The app now has a real domain, **de-elitesfamily.org**. Getting it fully live

@@ -399,4 +399,84 @@ export interface MemberSignupRequest {
   decidedAt?: string;
 }
 
+// Money going OUT — the other half of the financial picture alongside dues/
+// event/bill payments (money coming in, tracked elsewhere via
+// AdminPaymentRecord). Not tied to any member. `category` is freeform text
+// (same "freeform over fixed taxonomy" choice as GalleryItem.category
+// elsewhere in this file) — the CMS's expenditure-by-category report just
+// groups by whatever categories actually exist.
+export interface Expenditure {
+  id: string;
+  description: string;
+  category: string;
+  amount: number;
+  currency: string;
+  // The date the expense happened (YYYY-MM-DD), not when it was logged.
+  date: string;
+  createdAt: string;
+}
+
+// POST/PATCH /api/admin/expenditures — currency is optional and defaults to
+// the platform's configured dues currency (see DUES_CURRENCY) if omitted.
+export interface ExpenditureInput {
+  description?: string;
+  category?: string;
+  amount?: number;
+  currency?: string;
+  date?: string;
+}
+
+// --- Reports (CMS "Reports" tab) ---
+
+export interface CurrencyTotal {
+  currency: string;
+  total: number;
+}
+
+// GET /api/admin/reports/defaulters — who hasn't (fully) paid a given
+// month's welfare or executive dues. Only members still owing something
+// show up here (fully-paid members are summarized in paidCount instead).
+export interface DefaulterRow {
+  memberId: string;
+  fullName: string;
+  email?: string;
+  phone?: string;
+  duesAmount: number;
+  paid: number;
+  outstanding: number;
+  currency: string;
+}
+export interface DefaultersReport {
+  period: string;
+  kind: 'welfare' | 'executive';
+  rows: DefaulterRow[];
+  paidCount: number;
+  unpaidCount: number;
+  totalOutstandingByCurrency: CurrencyTotal[];
+}
+
+// GET /api/admin/reports/financial-summary — income (every successful dues/
+// event/bill payment) vs. expenditure for a date range, grouped by
+// currency throughout since each row carries its own rather than assuming
+// one global currency.
+export interface FinancialSummaryReport {
+  from: string;
+  to: string;
+  incomeByType: { type: 'dues' | 'executive-dues' | 'event' | 'bill'; currency: string; total: number }[];
+  incomeTotals: CurrencyTotal[];
+  expenditureByCategory: { category: string; currency: string; total: number }[];
+  expenditureTotals: CurrencyTotal[];
+  netTotals: CurrencyTotal[];
+}
+
+// GET /api/admin/reports/member-statement/:memberId — one member's full
+// payment history (dues, executive dues, events, bills) in one place.
+export interface MemberStatementReport {
+  memberId: string;
+  memberName: string;
+  memberEmail: string;
+  rows: AdminPaymentRecord[];
+  totalsByCurrency: CurrencyTotal[];
+}
+
 

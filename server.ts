@@ -498,6 +498,26 @@ async function initDb() {
         created_at TIMESTAMPTZ NOT NULL DEFAULT now()
       );
     `);
+
+    // Money going OUT — the other half of the picture alongside dues/event/
+    // bill payments (money coming in). Not tied to any member; `category`
+    // is freeform text, same "freeform over fixed taxonomy" choice as
+    // GalleryItem.category elsewhere in this file — admins type whatever
+    // label makes sense (Events, Welfare Support, Admin, etc.) and the CMS's
+    // category-breakdown report picks up whatever categories actually exist
+    // rather than enforcing a fixed list. Feeds the CMS's Reports tab
+    // (income-vs-expenditure summary, expenditure-by-category).
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS expenditures (
+        id TEXT PRIMARY KEY,
+        description TEXT NOT NULL,
+        category TEXT NOT NULL,
+        amount NUMERIC NOT NULL,
+        currency TEXT NOT NULL,
+        expense_date DATE NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+    `);
     await db.query(
       `CREATE UNIQUE INDEX IF NOT EXISTS member_bills_reference_unique ON member_bills (reference) WHERE reference IS NOT NULL;`
     );
@@ -2244,6 +2264,113 @@ app.delete("/api/admin/bills/:id", async (req, res) => {
   }
 });
 
+// --- Expenditure (money going OUT) ---
+// Not tied to any member — just a description, category, amount, and the
+// date the expense happened. Feeds the CMS's Reports tab alongside the
+// income side (dues/event/bill payments) tracked elsewhere in this file.
+
+function mapExpenditureRow(row: any) {
+  return {
+    id: row.id,
+    description: row.description,
+    category: row.category,
+    amount: Number(row.amount),
+    currency: row.currency,
+    date: row.expense_date instanceof Date ? row.expense_date.toISOString().slice(0, 10) : String(row.expense_date).slice(0, 10),
+    createdAt: row.created_at,
+  };
+}
+
+app.get("/api/admin/expenditures", async (req, res) => {
+  try {
+    const db = getPool();
+    const result = await db.query("SELECT * FROM expenditures ORDER BY expense_date DESC, created_at DESC");
+    res.json({ success: true, data: result.rows.map(mapExpenditureRow) });
+  } catch (error: any) {
+    console.error("Failed to load expenditures:", error);
+    res.status(500).json({ success: false, error: error.message || "Failed to load expenditures." });
+  }
+});
+
+app.post("/api/admin/expenditures", async (req, res) => {
+  try {
+    const b = req.body || {};
+    const description = typeof b.description === "string" ? b.description.trim() : "";
+    const category = typeof b.category === "string" ? b.category.trim() : "";
+    const amount = Number(b.amount);
+    const date = typeof b.date === "string" ? b.date.trim() : "";
+    if (!description) return res.status(400).json({ success: false, error: "A description is required." });
+    if (!category) return res.status(400).json({ success: false, error: "A category is required." });
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return res.status(400).json({ success: false, error: "Enter a valid amount greater than zero." });
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return res.status(400).json({ success: false, error: "A valid date (YYYY-MM-DD) is required." });
+    }
+    const currency = typeof b.currency === "string" && b.currency.trim() ? b.currency.trim().toUpperCase() : getDuesCurrency();
+    const db = getPool();
+    const id = `exp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const result = await db.query(
+      `INSERT INTO expenditures (id, description, category, amount, currency, expense_date)
+       VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+      [id, description, category, amount, currency, date]
+    );
+    res.json({ success: true, data: mapExpenditureRow(result.rows[0]) });
+  } catch (error: any) {
+    console.error("Failed to create expenditure:", error);
+    res.status(500).json({ success: false, error: error.message || "Failed to log expenditure." });
+  }
+});
+
+app.patch("/api/admin/expenditures/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const b = req.body || {};
+    if (b.amount !== undefined && (!Number.isFinite(Number(b.amount)) || Number(b.amount) <= 0)) {
+      return res.status(400).json({ success: false, error: "Enter a valid amount greater than zero." });
+    }
+    if (b.date !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(String(b.date).trim())) {
+      return res.status(400).json({ success: false, error: "A valid date (YYYY-MM-DD) is required." });
+    }
+    const db = getPool();
+    const result = await db.query(
+      `UPDATE expenditures SET
+         description = COALESCE($2, description),
+         category = COALESCE($3, category),
+         amount = COALESCE($4, amount),
+         currency = COALESCE($5, currency),
+         expense_date = COALESCE($6, expense_date)
+       WHERE id = $1 RETURNING *`,
+      [
+        id,
+        typeof b.description === "string" && b.description.trim() ? b.description.trim() : null,
+        typeof b.category === "string" && b.category.trim() ? b.category.trim() : null,
+        b.amount !== undefined ? Number(b.amount) : null,
+        typeof b.currency === "string" && b.currency.trim() ? b.currency.trim().toUpperCase() : null,
+        typeof b.date === "string" && b.date.trim() ? b.date.trim() : null,
+      ]
+    );
+    if (result.rowCount === 0) return res.status(404).json({ success: false, error: "Expenditure not found." });
+    res.json({ success: true, data: mapExpenditureRow(result.rows[0]) });
+  } catch (error: any) {
+    console.error("Failed to update expenditure:", error);
+    res.status(500).json({ success: false, error: error.message || "Failed to update expenditure." });
+  }
+});
+
+app.delete("/api/admin/expenditures/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const db = getPool();
+    const result = await db.query("DELETE FROM expenditures WHERE id = $1", [id]);
+    if (result.rowCount === 0) return res.status(404).json({ success: false, error: "Expenditure not found." });
+    res.json({ success: true });
+  } catch (error: any) {
+    console.error("Failed to delete expenditure:", error);
+    res.status(500).json({ success: false, error: error.message || "Failed to delete expenditure." });
+  }
+});
+
 // Manually log a payment collected outside Paystack (cash, bank transfer,
 // cheque, etc.) so reconciliation stays complete even for offline
 // collections. Defaults to status 'success' since a manual entry is
@@ -2449,6 +2576,189 @@ app.patch("/api/admin/payments/:type/:id", async (req, res) => {
   }
 });
 
+// --- Reports (CMS "Reports" tab) ---
+//
+// Three on-demand reports, all read-only (nothing here writes anything).
+// Each reuses data/queries that already exist elsewhere in this file rather
+// than duplicating logic — getDuesReportRows is the same function the
+// monthly WhatsApp dues report is built from.
+
+// Who hasn't (fully) paid a given month's welfare or executive dues —
+// exactly the "unpaid" half of the data the WhatsApp report already
+// computes, exposed on demand instead of waiting for the end of the month.
+app.get("/api/admin/reports/defaulters", async (req, res) => {
+  try {
+    const kind: DuesKind = req.query.kind === "executive" ? "executive" : "welfare";
+    const period =
+      typeof req.query.period === "string" && /^\d{4}-\d{2}$/.test(req.query.period) ? req.query.period : currentDuesPeriod();
+    const allRows = await getDuesReportRows(period, kind);
+    const defaulters = allRows
+      .filter((r) => r.paid < r.duesAmount)
+      .map((r) => ({
+        memberId: r.id,
+        fullName: r.fullName,
+        email: r.email,
+        phone: r.phone,
+        duesAmount: r.duesAmount,
+        paid: r.paid,
+        outstanding: Math.max(0, r.duesAmount - r.paid),
+        currency: r.currency,
+      }));
+    const totalOutstandingByCurrency: Record<string, number> = {};
+    for (const d of defaulters) {
+      totalOutstandingByCurrency[d.currency] = (totalOutstandingByCurrency[d.currency] || 0) + d.outstanding;
+    }
+    res.json({
+      success: true,
+      data: {
+        period,
+        kind,
+        rows: defaulters,
+        paidCount: allRows.length - defaulters.length,
+        unpaidCount: defaulters.length,
+        totalOutstandingByCurrency: Object.entries(totalOutstandingByCurrency).map(([currency, total]) => ({ currency, total })),
+      },
+    });
+  } catch (error: any) {
+    console.error("Failed to generate defaulters report:", error);
+    res.status(500).json({ success: false, error: error.message || "Failed to generate defaulters report." });
+  }
+});
+
+// Income (every successful dues/event/bill payment) vs. expenditure, for a
+// date range — defaults to the current calendar month if from/to aren't
+// given. `to` is treated as inclusive of that whole day. Grouped by
+// currency throughout rather than assumed to be a single currency, since
+// each payment/expenditure row carries its own.
+app.get("/api/admin/reports/financial-summary", async (req, res) => {
+  try {
+    const today = new Date();
+    const defaultFrom = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-01`;
+    const defaultTo = today.toISOString().slice(0, 10);
+    const from = typeof req.query.from === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.query.from) ? req.query.from : defaultFrom;
+    const to = typeof req.query.to === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.query.to) ? req.query.to : defaultTo;
+    const toExclusiveDate = new Date(`${to}T00:00:00Z`);
+    toExclusiveDate.setUTCDate(toExclusiveDate.getUTCDate() + 1);
+    const toExclusive = toExclusiveDate.toISOString().slice(0, 10);
+
+    const db = getPool();
+    const incomeResult = await db.query(
+      `SELECT 'dues' AS type, currency, SUM(amount) AS total FROM welfare_dues_payments
+         WHERE status = 'success' AND paid_at >= $1::date AND paid_at < $2::date GROUP BY currency
+       UNION ALL
+       SELECT 'executive-dues', currency, SUM(amount) FROM executive_dues_payments
+         WHERE status = 'success' AND paid_at >= $1::date AND paid_at < $2::date GROUP BY currency
+       UNION ALL
+       SELECT 'event', currency, SUM(amount) FROM event_payments
+         WHERE status = 'success' AND paid_at >= $1::date AND paid_at < $2::date GROUP BY currency
+       UNION ALL
+       SELECT 'bill', currency, SUM(amount) FROM member_bills
+         WHERE status = 'success' AND paid_at >= $1::date AND paid_at < $2::date GROUP BY currency`,
+      [from, toExclusive]
+    );
+    const expenditureResult = await db.query(
+      `SELECT category, currency, SUM(amount) AS total FROM expenditures
+       WHERE expense_date >= $1::date AND expense_date < $2::date
+       GROUP BY category, currency
+       ORDER BY total DESC`,
+      [from, toExclusive]
+    );
+
+    const incomeByType = incomeResult.rows.map((r: any) => ({ type: r.type, currency: r.currency, total: Number(r.total) }));
+    const expenditureByCategory = expenditureResult.rows.map((r: any) => ({
+      category: r.category,
+      currency: r.currency,
+      total: Number(r.total),
+    }));
+
+    const sumByCurrency = (rows: { currency: string; total: number }[]) => {
+      const totals: Record<string, number> = {};
+      for (const r of rows) totals[r.currency] = (totals[r.currency] || 0) + r.total;
+      return Object.entries(totals).map(([currency, total]) => ({ currency, total }));
+    };
+    const incomeTotals = sumByCurrency(incomeByType);
+    const expenditureTotals = sumByCurrency(expenditureByCategory);
+    const netTotals = incomeTotals.map((i) => ({
+      currency: i.currency,
+      total: i.total - (expenditureTotals.find((e) => e.currency === i.currency)?.total || 0),
+    }));
+    for (const e of expenditureTotals) {
+      if (!netTotals.find((n) => n.currency === e.currency)) netTotals.push({ currency: e.currency, total: -e.total });
+    }
+
+    res.json({ success: true, data: { from, to, incomeByType, incomeTotals, expenditureByCategory, expenditureTotals, netTotals } });
+  } catch (error: any) {
+    console.error("Failed to generate financial summary report:", error);
+    res.status(500).json({ success: false, error: error.message || "Failed to generate financial summary report." });
+  }
+});
+
+// One member's full payment history (dues, executive dues, events, bills)
+// in one place, with optional from/to date filtering (on when each row was
+// created) — "how much has this person paid us, total and in detail."
+// Filters in JS rather than SQL since this reuses the same four-table UNION
+// as GET /api/admin/payments and the member list here is small enough that
+// this is simpler than four separately-parameterized queries.
+app.get("/api/admin/reports/member-statement/:memberId", async (req, res) => {
+  try {
+    const { memberId } = req.params;
+    const db = getPool();
+    const memberRes = await db.query("SELECT full_name, email FROM member_accounts WHERE id = $1", [memberId]);
+    const member = memberRes.rows[0];
+    if (!member) return res.status(404).json({ success: false, error: "Member not found." });
+
+    const from = typeof req.query.from === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.query.from) ? req.query.from : null;
+    const to = typeof req.query.to === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.query.to) ? req.query.to : null;
+    let toExclusive: string | null = null;
+    if (to) {
+      const d = new Date(`${to}T00:00:00Z`);
+      d.setUTCDate(d.getUTCDate() + 1);
+      toExclusive = d.toISOString().slice(0, 10);
+    }
+
+    const result = await db.query(
+      `SELECT wd.id, wd.member_id, 'dues' AS type, wd.period AS label, wd.amount, wd.currency, wd.channel, wd.reference, wd.status, wd.paid_at, wd.created_at
+       FROM welfare_dues_payments wd WHERE wd.member_id = $1
+       UNION ALL
+       SELECT ep.id, ep.member_id, 'event' AS type, ep.event_title AS label, ep.amount, ep.currency, ep.channel, ep.reference, ep.status, ep.paid_at, ep.created_at
+       FROM event_payments ep WHERE ep.member_id = $1
+       UNION ALL
+       SELECT xd.id, xd.member_id, 'executive-dues' AS type, xd.period AS label, xd.amount, xd.currency, xd.channel, xd.reference, xd.status, xd.paid_at, xd.created_at
+       FROM executive_dues_payments xd WHERE xd.member_id = $1
+       UNION ALL
+       SELECT mb.id, mb.member_id, 'bill' AS type, mb.label AS label, mb.amount, mb.currency, mb.channel, mb.reference, mb.status, mb.paid_at, mb.created_at
+       FROM member_bills mb WHERE mb.member_id = $1
+       ORDER BY created_at DESC`,
+      [memberId]
+    );
+
+    let rows = result.rows;
+    if (from) rows = rows.filter((r: any) => new Date(r.created_at) >= new Date(`${from}T00:00:00Z`));
+    if (toExclusive) rows = rows.filter((r: any) => new Date(r.created_at) < new Date(`${toExclusive}T00:00:00Z`));
+
+    const mapped = rows.map((r: any) => mapAdminPaymentRow({ ...r, full_name: member.full_name, email: member.email }));
+    const totals: Record<string, number> = {};
+    for (const r of mapped) {
+      if (r.status !== "success") continue;
+      totals[r.currency] = (totals[r.currency] || 0) + r.amount;
+    }
+
+    res.json({
+      success: true,
+      data: {
+        memberId,
+        memberName: member.full_name,
+        memberEmail: member.email,
+        rows: mapped,
+        totalsByCurrency: Object.entries(totals).map(([currency, total]) => ({ currency, total })),
+      },
+    });
+  } catch (error: any) {
+    console.error("Failed to generate member statement report:", error);
+    res.status(500).json({ success: false, error: error.message || "Failed to generate member statement report." });
+  }
+});
+
 // --- Payments (Paystack) ---
 //
 // We never let the client dictate an amount out of thin air. Both
@@ -2572,6 +2882,7 @@ async function markDuesEventSent(eventKey: string): Promise<void> {
 interface DuesReportRow {
   id: string;
   fullName: string;
+  email?: string;
   phone?: string;
   duesAmount: number;
   currency: string;
@@ -2588,7 +2899,7 @@ async function getDuesReportRows(period: string, kind: DuesKind): Promise<DuesRe
   const db = getPool();
   const query =
     kind === "welfare"
-      ? `SELECT ma.id, ma.full_name, ma.phone, ma.dues_amount AS amount, ma.currency,
+      ? `SELECT ma.id, ma.full_name, ma.email, ma.phone, ma.dues_amount AS amount, ma.currency,
                 COALESCE(paid.total, 0) AS paid
          FROM member_accounts ma
          LEFT JOIN (
@@ -2597,7 +2908,7 @@ async function getDuesReportRows(period: string, kind: DuesKind): Promise<DuesRe
          ) paid ON paid.member_id = ma.id
          WHERE ma.status = 'active' AND ma.dues_amount > 0
          ORDER BY ma.full_name ASC`
-      : `SELECT ma.id, ma.full_name, ma.phone, ma.executive_dues_amount AS amount, ma.currency,
+      : `SELECT ma.id, ma.full_name, ma.email, ma.phone, ma.executive_dues_amount AS amount, ma.currency,
                 COALESCE(paid.total, 0) AS paid
          FROM member_accounts ma
          LEFT JOIN (
@@ -2610,6 +2921,7 @@ async function getDuesReportRows(period: string, kind: DuesKind): Promise<DuesRe
   return result.rows.map((row: any) => ({
     id: row.id,
     fullName: row.full_name,
+    email: row.email || undefined,
     phone: row.phone || undefined,
     duesAmount: Number(row.amount),
     currency: row.currency,
