@@ -1,4 +1,4 @@
-import { MemberAccount, MemberProfileUpdate, WelfareDuesPayment, EventPayment, MemberBill, EventRsvp, EventRsvpResponse, AdminEventRsvp, PaymentInitResponse, DuesBalance, AdminPaymentRecord, ManualPaymentInput } from '../types';
+import { MemberAccount, MemberProfileUpdate, WelfareDuesPayment, EventPayment, MemberBill, EventRsvp, EventRsvpResponse, AdminEventRsvp, PaymentInitResponse, DuesBalance, AdminPaymentRecord, ManualPaymentInput, AdminPaymentUpdate } from '../types';
 
 async function handleJson<T>(res: Response): Promise<T> {
   const result = await res.json().catch(() => ({}));
@@ -278,6 +278,22 @@ export async function createManualPayment(input: ManualPaymentInput): Promise<Ad
 export async function deleteAdminPayment(type: 'dues' | 'event' | 'executive-dues' | 'bill', id: string): Promise<void> {
   const res = await fetch(`/api/admin/payments/${type}/${encodeURIComponent(id)}`, { method: 'DELETE' });
   await handleJson(res);
+}
+
+// Editing a manually-logged payment (see AdminPaymentUpdate). Only offered
+// in the CMS for a payment that was logged manually in the first place —
+// a real Paystack payment is rejected server-side.
+export async function updateAdminPayment(
+  type: 'dues' | 'event' | 'executive-dues' | 'bill',
+  id: string,
+  update: AdminPaymentUpdate
+): Promise<AdminPaymentRecord> {
+  const res = await fetch(`/api/admin/payments/${type}/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(update),
+  });
+  return handleJson(res);
 }
 
 // --- Admin: one-off bills ---

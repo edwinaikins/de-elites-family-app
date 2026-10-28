@@ -4,13 +4,13 @@ import {
   Settings, Save, Plus, Trash2, Shield, Crown,
   RefreshCw, Heart, ShieldCheck, Users, Flame,
   Award, Compass, Image, Calendar, Film,
-  X, Check, AlertCircle, LogOut,
+  X, Check, AlertCircle, LogOut, Pencil,
   UserCheck, Loader2, Mail, Phone, Wallet, Ticket, UserPlus, Download
 } from 'lucide-react';
 import { useCms } from '../context/CmsContext';
 import { ImageUpload } from './ImageUpload';
 import { BulkMediaUpload } from './BulkMediaUpload';
-import { Pillar, Leader, GalleryItem, EliteEvent, MediaItem, HeroConfig, CmsUser, MemberApplication, MemberAccount, WelfareDuesPayment, EventPayment, MemberBill, AdminEventRsvp, AdminPaymentRecord, ManualPaymentInput } from '../types';
+import { Pillar, Leader, GalleryItem, EliteEvent, MediaItem, HeroConfig, CmsUser, MemberApplication, MemberAccount, WelfareDuesPayment, EventPayment, MemberBill, AdminEventRsvp, AdminPaymentRecord, ManualPaymentInput, AdminPaymentUpdate } from '../types';
 import {
   fetchMemberApplications, updateMemberApplicationStatus, deleteMemberApplication, UploadedMediaItem,
   fetchWhatsAppStatus, fetchWhatsAppGroups, resendApplicationNotifications, WhatsAppStatus,
@@ -19,7 +19,7 @@ import {
   fetchAllMemberAccounts, createMemberAccount, updateMemberAccount, deleteMemberAccount,
   fetchMemberDuesHistoryAdmin, fetchMemberEventPaymentsAdmin, fetchAllPaymentsAdmin,
   fetchMemberExecutiveDuesHistoryAdmin, fetchMemberBillsAdmin,
-  createManualPayment, deleteAdminPayment,
+  createManualPayment, deleteAdminPayment, updateAdminPayment,
   createBill, updateBill, deleteBill,
   fetchEventRsvpsAdmin,
 } from '../lib/memberClient';
@@ -140,6 +140,21 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
   const [paymentsSearch, setPaymentsSearch] = useState('');
   const [paymentsTypeFilter, setPaymentsTypeFilter] = useState<'all' | 'dues' | 'event' | 'executive-dues' | 'bill'>('all');
   const [paymentsStatusFilter, setPaymentsStatusFilter] = useState<'all' | 'success' | 'pending' | 'failed'>('all');
+
+  // Editing a manually-logged payment inline, right in the Payments table —
+  // only ever offered for a payment that was logged manually in the first
+  // place (see isManualPayment below); a real Paystack payment stays
+  // read-only here. Keyed by `${type}-${id}` so only one row's edit form is
+  // open at a time.
+  const [editingPaymentKey, setEditingPaymentKey] = useState<string | null>(null);
+  const [editPaymentAmount, setEditPaymentAmount] = useState('');
+  const [editPaymentCurrency, setEditPaymentCurrency] = useState('');
+  const [editPaymentStatus, setEditPaymentStatus] = useState<'pending' | 'success' | 'failed'>('success');
+  const [editPaymentChannel, setEditPaymentChannel] = useState('');
+  const [editPaymentPaidAt, setEditPaymentPaidAt] = useState('');
+  const [editPaymentLabel, setEditPaymentLabel] = useState('');
+  const [editPaymentSaving, setEditPaymentSaving] = useState(false);
+  const [editPaymentError, setEditPaymentError] = useState('');
 
   // "Log Manual Payment" form — for cash, bank transfer, or any payment
   // collected outside Paystack, so it still shows up in reconciliation.
@@ -395,6 +410,56 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
       setPayments((prev) => prev.filter((x) => !(x.type === p.type && x.id === p.id)));
     } catch (err: any) {
       setPaymentsError(err.message || 'Failed to delete payment.');
+    }
+  };
+
+  // A payment is editable in the CMS only if it was logged manually (cash,
+  // bank transfer, etc.) rather than cleared through Paystack — mirrors
+  // isManualPaymentReference server-side. Real Paystack payments either
+  // succeeded for real money or are an in-flight 'pending' checkout; both
+  // stay exactly as the gateway recorded them.
+  const isManualPayment = (p: AdminPaymentRecord) => !p.reference || p.reference.startsWith('manual-');
+
+  const handleStartEditPayment = (p: AdminPaymentRecord) => {
+    setEditPaymentError('');
+    setEditingPaymentKey(`${p.type}-${p.id}`);
+    setEditPaymentAmount(String(p.amount));
+    setEditPaymentCurrency(p.currency);
+    setEditPaymentStatus(p.status);
+    setEditPaymentChannel(p.channel || '');
+    setEditPaymentPaidAt(p.paidAt ? new Date(p.paidAt).toISOString().slice(0, 10) : '');
+    setEditPaymentLabel(p.label);
+  };
+
+  const handleCancelEditPayment = () => {
+    setEditingPaymentKey(null);
+    setEditPaymentError('');
+  };
+
+  const handleSaveEditPayment = async (p: AdminPaymentRecord) => {
+    setEditPaymentError('');
+    const amount = Number(editPaymentAmount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setEditPaymentError('Enter a valid amount greater than zero.');
+      return;
+    }
+    setEditPaymentSaving(true);
+    try {
+      const update: AdminPaymentUpdate = {
+        amount,
+        currency: editPaymentCurrency.trim() || p.currency,
+        status: editPaymentStatus,
+        channel: editPaymentChannel.trim() || 'cash',
+        label: editPaymentLabel.trim() || p.label,
+        paidAt: editPaymentPaidAt ? editPaymentPaidAt : undefined,
+      };
+      const updated = await updateAdminPayment(p.type, p.id, update);
+      setPayments((prev) => prev.map((x) => (x.type === p.type && x.id === p.id ? updated : x)));
+      setEditingPaymentKey(null);
+    } catch (err: any) {
+      setEditPaymentError(err.message || 'Failed to update payment.');
+    } finally {
+      setEditPaymentSaving(false);
     }
   };
 
@@ -3396,49 +3461,169 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                           </tr>
                         </thead>
                         <tbody>
-                          {filteredPayments.map((p) => (
-                            <tr key={`${p.type}-${p.id}`} className="border-b border-gray-900/60 hover:bg-jet-black/60 transition-colors">
-                              <td className="px-4 py-3 font-mono text-[10px] text-gray-500 whitespace-nowrap">
-                                {new Date(p.createdAt).toLocaleDateString()}
-                              </td>
-                              <td className="px-4 py-3 min-w-0">
-                                <span className="font-sans font-bold text-white block truncate max-w-[160px]">{p.memberName}</span>
-                                <span className="font-sans text-[10px] text-gray-500 block truncate max-w-[160px]">{p.memberEmail}</span>
-                              </td>
-                              <td className="px-4 py-3">
-                                <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded border ${
-                                  p.type === 'dues' ? 'bg-luxury-gold/10 text-luxury-gold border-luxury-gold/20'
-                                  : p.type === 'executive-dues' ? 'bg-purple-950/30 text-purple-400 border-purple-900/40'
-                                  : p.type === 'bill' ? 'bg-orange-950/30 text-orange-400 border-orange-900/40'
-                                  : 'bg-blue-950/30 text-blue-400 border-blue-900/40'
-                                }`}>
-                                  {p.type === 'executive-dues' ? 'exec dues' : p.type}
-                                </span>
-                              </td>
-                              <td className="px-4 py-3 text-gray-300 max-w-[180px] truncate">
-                                {(p.type === 'dues' || p.type === 'executive-dues') ? formatPeriodLabel(p.label) : p.label}
-                              </td>
-                              <td className="px-4 py-3 text-gray-400 text-[10px]">{formatChannel(p.channel)}</td>
-                              <td className="px-4 py-3 text-right font-mono text-gray-200 whitespace-nowrap">
-                                {p.currency} {p.amount.toFixed(2)}
-                              </td>
-                              <td className="px-4 py-3 text-right">
-                                <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded border ${statusBadgeClass(p.status)}`}>
-                                  {p.status}
-                                </span>
-                              </td>
-                              <td className="px-4 py-3 text-right">
-                                <button
-                                  type="button"
-                                  onClick={() => handleDeletePayment(p)}
-                                  className="inline-flex items-center justify-center p-1.5 rounded border border-gray-800 text-gray-500 hover:text-red-400 hover:border-red-900/60 hover:bg-red-950/20 transition-colors"
-                                  title="Delete payment"
-                                >
-                                  <Trash2 size={12} />
-                                </button>
-                              </td>
-                            </tr>
-                          ))}
+                          {filteredPayments.map((p) => {
+                            const key = `${p.type}-${p.id}`;
+                            const manual = isManualPayment(p);
+                            const isEditing = editingPaymentKey === key;
+                            return (
+                              <React.Fragment key={key}>
+                                <tr className="border-b border-gray-900/60 hover:bg-jet-black/60 transition-colors">
+                                  <td className="px-4 py-3 font-mono text-[10px] text-gray-500 whitespace-nowrap">
+                                    {new Date(p.createdAt).toLocaleDateString()}
+                                  </td>
+                                  <td className="px-4 py-3 min-w-0">
+                                    <span className="font-sans font-bold text-white block truncate max-w-[160px]">{p.memberName}</span>
+                                    <span className="font-sans text-[10px] text-gray-500 block truncate max-w-[160px]">{p.memberEmail}</span>
+                                  </td>
+                                  <td className="px-4 py-3">
+                                    <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded border ${
+                                      p.type === 'dues' ? 'bg-luxury-gold/10 text-luxury-gold border-luxury-gold/20'
+                                      : p.type === 'executive-dues' ? 'bg-purple-950/30 text-purple-400 border-purple-900/40'
+                                      : p.type === 'bill' ? 'bg-orange-950/30 text-orange-400 border-orange-900/40'
+                                      : 'bg-blue-950/30 text-blue-400 border-blue-900/40'
+                                    }`}>
+                                      {p.type === 'executive-dues' ? 'exec dues' : p.type}
+                                    </span>
+                                  </td>
+                                  <td className="px-4 py-3 text-gray-300 max-w-[180px] truncate">
+                                    {(p.type === 'dues' || p.type === 'executive-dues') ? formatPeriodLabel(p.label) : p.label}
+                                  </td>
+                                  <td className="px-4 py-3 text-gray-400 text-[10px]">{formatChannel(p.channel)}</td>
+                                  <td className="px-4 py-3 text-right font-mono text-gray-200 whitespace-nowrap">
+                                    {p.currency} {p.amount.toFixed(2)}
+                                  </td>
+                                  <td className="px-4 py-3 text-right">
+                                    <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded border ${statusBadgeClass(p.status)}`}>
+                                      {p.status}
+                                    </span>
+                                  </td>
+                                  <td className="px-4 py-3 text-right">
+                                    <div className="flex items-center justify-end gap-1.5">
+                                      {manual ? (
+                                        <button
+                                          type="button"
+                                          onClick={() => (isEditing ? handleCancelEditPayment() : handleStartEditPayment(p))}
+                                          className="inline-flex items-center justify-center p-1.5 rounded border border-gray-800 text-gray-500 hover:text-luxury-gold hover:border-luxury-gold/60 hover:bg-luxury-gold/10 transition-colors"
+                                          title={isEditing ? 'Cancel edit' : 'Edit payment'}
+                                        >
+                                          {isEditing ? <X size={12} /> : <Pencil size={12} />}
+                                        </button>
+                                      ) : (
+                                        <span
+                                          className="inline-flex items-center justify-center p-1.5 rounded border border-gray-900 text-gray-700 cursor-not-allowed"
+                                          title="Processed through Paystack — can't be edited here"
+                                        >
+                                          <Pencil size={12} />
+                                        </span>
+                                      )}
+                                      <button
+                                        type="button"
+                                        onClick={() => handleDeletePayment(p)}
+                                        className="inline-flex items-center justify-center p-1.5 rounded border border-gray-800 text-gray-500 hover:text-red-400 hover:border-red-900/60 hover:bg-red-950/20 transition-colors"
+                                        title="Delete payment"
+                                      >
+                                        <Trash2 size={12} />
+                                      </button>
+                                    </div>
+                                  </td>
+                                </tr>
+                                {isEditing && (
+                                  <tr className="border-b border-gray-900/60 bg-jet-black/40">
+                                    <td colSpan={8} className="px-4 py-4">
+                                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+                                        <div className="flex flex-col gap-1">
+                                          <label className="font-sans text-[9px] font-black uppercase tracking-widest text-gray-500">Amount</label>
+                                          <input
+                                            type="number"
+                                            value={editPaymentAmount}
+                                            onChange={(e) => setEditPaymentAmount(e.target.value)}
+                                            className="bg-jet-black border border-gray-800 rounded px-2.5 py-2 text-xs text-white focus:outline-none focus:border-luxury-gold"
+                                          />
+                                        </div>
+                                        <div className="flex flex-col gap-1">
+                                          <label className="font-sans text-[9px] font-black uppercase tracking-widest text-gray-500">Currency</label>
+                                          <input
+                                            type="text"
+                                            value={editPaymentCurrency}
+                                            onChange={(e) => setEditPaymentCurrency(e.target.value)}
+                                            className="bg-jet-black border border-gray-800 rounded px-2.5 py-2 text-xs text-white focus:outline-none focus:border-luxury-gold"
+                                          />
+                                        </div>
+                                        <div className="flex flex-col gap-1">
+                                          <label className="font-sans text-[9px] font-black uppercase tracking-widest text-gray-500">Status</label>
+                                          <select
+                                            value={editPaymentStatus}
+                                            onChange={(e) => setEditPaymentStatus(e.target.value as 'pending' | 'success' | 'failed')}
+                                            className="bg-jet-black border border-gray-800 rounded px-2.5 py-2 text-xs text-white focus:outline-none focus:border-luxury-gold"
+                                          >
+                                            <option value="success">success</option>
+                                            <option value="pending">pending</option>
+                                            <option value="failed">failed</option>
+                                          </select>
+                                        </div>
+                                        <div className="flex flex-col gap-1">
+                                          <label className="font-sans text-[9px] font-black uppercase tracking-widest text-gray-500">Channel</label>
+                                          <input
+                                            type="text"
+                                            value={editPaymentChannel}
+                                            onChange={(e) => setEditPaymentChannel(e.target.value)}
+                                            placeholder="cash"
+                                            className="bg-jet-black border border-gray-800 rounded px-2.5 py-2 text-xs text-white focus:outline-none focus:border-luxury-gold"
+                                          />
+                                        </div>
+                                        <div className="flex flex-col gap-1">
+                                          <label className="font-sans text-[9px] font-black uppercase tracking-widest text-gray-500">Paid Date</label>
+                                          <input
+                                            type="date"
+                                            value={editPaymentPaidAt}
+                                            onChange={(e) => setEditPaymentPaidAt(e.target.value)}
+                                            className="bg-jet-black border border-gray-800 rounded px-2.5 py-2 text-xs text-white focus:outline-none focus:border-luxury-gold"
+                                          />
+                                        </div>
+                                        <div className="flex flex-col gap-1 sm:col-span-2 lg:col-span-2">
+                                          <label className="font-sans text-[9px] font-black uppercase tracking-widest text-gray-500">
+                                            {p.type === 'dues' || p.type === 'executive-dues' ? 'Period (e.g. 2026-08)' : p.type === 'event' ? 'Event Title' : 'Bill Label'}
+                                          </label>
+                                          <input
+                                            type="text"
+                                            value={editPaymentLabel}
+                                            onChange={(e) => setEditPaymentLabel(e.target.value)}
+                                            className="bg-jet-black border border-gray-800 rounded px-2.5 py-2 text-xs text-white focus:outline-none focus:border-luxury-gold"
+                                          />
+                                        </div>
+                                      </div>
+
+                                      {editPaymentError && (
+                                        <div className="flex items-center gap-2 text-[10px] text-red-500 bg-red-500/10 border border-red-500/20 p-2.5 rounded mt-3">
+                                          <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                                          <span>{editPaymentError}</span>
+                                        </div>
+                                      )}
+
+                                      <div className="flex items-center gap-2 mt-3">
+                                        <button
+                                          type="button"
+                                          onClick={() => handleSaveEditPayment(p)}
+                                          disabled={editPaymentSaving}
+                                          className="px-4 py-2 bg-gradient-to-r from-luxury-gold to-luxury-gold-dark text-black font-sans font-black tracking-widest text-[10px] uppercase rounded transition-all disabled:opacity-50 flex items-center gap-2 cursor-pointer"
+                                        >
+                                          {editPaymentSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                                          Save
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={handleCancelEditPayment}
+                                          className="px-4 py-2 border border-gray-800 text-gray-400 font-sans font-black tracking-widest text-[10px] uppercase rounded hover:text-white hover:border-gray-700 transition-colors cursor-pointer"
+                                        >
+                                          Cancel
+                                        </button>
+                                      </div>
+                                    </td>
+                                  </tr>
+                                )}
+                              </React.Fragment>
+                            );
+                          })}
                         </tbody>
                       </table>
                     </div>

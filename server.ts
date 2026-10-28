@@ -2082,6 +2082,110 @@ app.delete("/api/admin/payments/:type/:id", async (req, res) => {
   }
 });
 
+// Table + the column that backs AdminPaymentRecord.label for each payment
+// type — lets one generic edit endpoint (below) cover all four types
+// instead of four near-identical ones. Dues/executive-dues: the period
+// (e.g. "2026-08"). Event: the event's title. Bill: the bill's own label.
+const PAYMENT_TYPE_INFO: Record<string, { table: string; labelColumn: string }> = {
+  dues: { table: "welfare_dues_payments", labelColumn: "period" },
+  "executive-dues": { table: "executive_dues_payments", labelColumn: "period" },
+  event: { table: "event_payments", labelColumn: "event_title" },
+  bill: { table: "member_bills", labelColumn: "label" },
+};
+
+// True for a payment logged manually by an admin (cash, bank transfer,
+// etc.) rather than cleared through Paystack. Manual payments either have
+// no reference yet (a bill not yet paid) or a reference explicitly
+// prefixed "manual-" (see POST /api/admin/payments above, and the bills'
+// markPaidChannel handling further up) — a real Paystack reference (real
+// or PAYSTACK_MOCK) is always set immediately at initialize time and never
+// carries that prefix (see the "dues-"/"exec-dues-"/"event-"/"bill-"
+// reference prefixes elsewhere in this file). Only manual payments may be
+// edited below — a real Paystack transaction stays exactly as the gateway
+// recorded it.
+function isManualPaymentReference(reference: string | null | undefined): boolean {
+  return !reference || reference.startsWith("manual-");
+}
+
+// Edit a manually-logged payment — amount, currency, status, channel, when
+// it was paid, and its period/event-title/bill-label — e.g. fixing a
+// typo'd amount, correcting which month a cash payment was meant for, or
+// flipping a stuck 'pending' entry to 'success' once confirmed. Real
+// Paystack payments are read-only here (see isManualPaymentReference above)
+// so the CMS can never make its record disagree with what the gateway
+// actually processed; to "fix" one of those, delete and re-log it as a
+// manual entry instead.
+app.patch("/api/admin/payments/:type/:id", async (req, res) => {
+  try {
+    const { type, id } = req.params;
+    const info = PAYMENT_TYPE_INFO[type];
+    if (!info) {
+      return res.status(400).json({ success: false, error: "type must be 'dues', 'executive-dues', 'event', or 'bill'." });
+    }
+    const db = getPool();
+    const existing = await db.query(`SELECT * FROM ${info.table} WHERE id = $1`, [id]);
+    if (existing.rowCount === 0) return res.status(404).json({ success: false, error: "Payment record not found." });
+    const current = existing.rows[0];
+    if (!isManualPaymentReference(current.reference)) {
+      return res.status(403).json({
+        success: false,
+        error: "This payment was processed through Paystack and can't be edited here — it stays exactly as the gateway recorded it.",
+      });
+    }
+
+    const b = req.body || {};
+    const amount = b.amount !== undefined ? Number(b.amount) : null;
+    if (amount !== null && (!Number.isFinite(amount) || amount <= 0)) {
+      return res.status(400).json({ success: false, error: "Enter a valid amount greater than zero." });
+    }
+    const currency = typeof b.currency === "string" && b.currency.trim() ? b.currency.trim().toUpperCase() : null;
+    const status = ["pending", "success", "failed"].includes(b.status) ? b.status : null;
+    const channel = typeof b.channel === "string" && b.channel.trim() ? b.channel.trim() : null;
+    const label = typeof b.label === "string" && b.label.trim() ? b.label.trim() : null;
+
+    // Accepts an explicit ISO date/time, or the literal "now" as shorthand
+    // for "today" (what the CMS's edit form sends for a quick "mark paid
+    // today"). Moving status to 'success' without an explicit date fills in
+    // "now" automatically — same default the manual-log and markPaidChannel
+    // flows already use — but only if there wasn't already a paid_at
+    // (don't clobber a real date just because the admin only touched the
+    // status). Moving status away from 'success' with no explicit date
+    // clears paid_at, since "pending"/"failed" shouldn't carry a paid date.
+    let paidAt: string | null = null;
+    if (typeof b.paidAt === "string" && b.paidAt.trim()) {
+      paidAt = b.paidAt.trim().toLowerCase() === "now" ? new Date().toISOString() : b.paidAt.trim();
+    }
+    if (status === "success" && !paidAt && !current.paid_at) {
+      paidAt = new Date().toISOString();
+    }
+    const clearPaidAt = !!status && status !== "success" && !paidAt;
+
+    const result = await db.query(
+      `UPDATE ${info.table} SET
+         amount = COALESCE($2, amount),
+         currency = COALESCE($3, currency),
+         status = COALESCE($4, status),
+         channel = COALESCE($5, channel),
+         ${info.labelColumn} = COALESCE($6, ${info.labelColumn}),
+         paid_at = CASE WHEN $8 THEN NULL WHEN $7::timestamptz IS NOT NULL THEN $7::timestamptz ELSE paid_at END
+       WHERE id = $1 RETURNING *`,
+      [id, amount, currency, status, channel, label, paidAt, clearPaidAt]
+    );
+
+    const updatedRow = result.rows[0];
+    const memberRes = await db.query("SELECT full_name, email FROM member_accounts WHERE id = $1", [updatedRow.member_id]);
+    const member = memberRes.rows[0];
+    const updatedLabel = type === "event" ? updatedRow.event_title : type === "bill" ? updatedRow.label : updatedRow.period;
+    res.json({
+      success: true,
+      data: mapAdminPaymentRow({ ...updatedRow, full_name: member?.full_name, email: member?.email, type, label: updatedLabel }),
+    });
+  } catch (error: any) {
+    console.error("Failed to update payment:", error);
+    res.status(500).json({ success: false, error: error.message || "Failed to update payment." });
+  }
+});
+
 // --- Payments (Paystack) ---
 //
 // We never let the client dictate an amount out of thin air. Both

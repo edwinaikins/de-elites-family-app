@@ -324,6 +324,23 @@ export interface ManualPaymentInput {
   eventTitle?: string;
 }
 
+// PATCH /api/admin/payments/:type/:id — editing a manually-logged payment
+// (amount, currency, status, channel, when it was paid, and its
+// period/event-title/bill-label, i.e. whichever thing AdminPaymentRecord.
+// label represents for that type). Only ever offered in the CMS for a
+// payment that was logged manually in the first place — a real Paystack
+// payment rejects this server-side (see isManualPaymentReference in
+// server.ts) and stays exactly as the gateway recorded it.
+export interface AdminPaymentUpdate {
+  amount?: number;
+  currency?: string;
+  status?: PaymentStatus;
+  channel?: string;
+  // An ISO date/time string, or the literal "now" as shorthand for "today".
+  paidAt?: string;
+  label?: string;
+}
+
 // Returned by POST /api/payments/*/initialize — everything the frontend
 // needs to open the Paystack Inline checkout. The amount/reference are
 // generated server-side so the client can never manipulate what gets

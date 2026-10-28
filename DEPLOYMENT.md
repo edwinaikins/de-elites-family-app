@@ -636,6 +636,17 @@ actually been collected. Use **Download CSV** there to hand a reconciliation
 sheet to a treasurer or import it into a spreadsheet. Each row also shows
 which channel (card / mobile money / etc.) the payment cleared through.
 
+**Editing a payment:** click the pencil icon on any row to fix a typo'd
+amount, correct which month/event/bill it was logged against, flip a stuck
+"pending" to "success" once confirmed, or fix the channel or paid date —
+right inline in the table. This only works for payments that were **logged
+manually** (cash, bank transfer, etc., via "Log Manual Payment" or marking a
+bill paid by hand) — a payment that actually went through Paystack shows a
+greyed-out, disabled pencil instead, since editing it here would make the
+CMS disagree with what the gateway really processed. If a real Paystack
+payment needs correcting, delete it and re-log the correct amount manually
+instead (or issue a refund through Paystack directly, outside this app).
+
 ## Domain: de-elitesfamily.org
 
 The app now has a real domain, **de-elitesfamily.org**. Getting it fully live
