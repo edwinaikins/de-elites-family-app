@@ -374,6 +374,30 @@ async function initDb() {
       );
     `);
 
+    // Requests to create a Member Portal login, submitted by a member via
+    // the WhatsApp self-service bot's "JOIN" flow (see
+    // handleWhatsAppDirectMessage's signup_* steps). Deliberately NOT the
+    // same thing as member_applications above (that's the "Join the
+    // Movement" public application form, with its own much longer set of
+    // questions) — this is just "someone wants a portal login", with the
+    // three essentials collected conversationally: full name, email, and
+    // their own chosen username. An admin reviews these in the CMS's
+    // Signup Requests tab; approving one is what actually creates the real
+    // member_accounts row (see POST /api/admin/signup-requests/:id/approve)
+    // — nothing here grants portal access by itself.
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS member_signup_requests (
+        id TEXT PRIMARY KEY,
+        full_name TEXT NOT NULL,
+        username TEXT NOT NULL,
+        email TEXT NOT NULL,
+        phone TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        decided_at TIMESTAMPTZ
+      );
+    `);
+
     // Member portal accounts — distinct from both `member_applications`
     // (prospective applicants) and the `users` cms_section (CMS admin/
     // moderator logins). This is the login + profile a real family member
@@ -1106,6 +1130,19 @@ function mapMemberRow(row: any) {
   };
 }
 
+function mapSignupRequestRow(row: any) {
+  return {
+    id: row.id,
+    fullName: row.full_name,
+    username: row.username,
+    email: row.email,
+    phone: row.phone,
+    status: row.status,
+    createdAt: row.created_at,
+    decidedAt: row.decided_at || undefined,
+  };
+}
+
 function mapDuesRow(row: any) {
   return {
     id: row.id,
@@ -1359,10 +1396,14 @@ type WhatsAppSelfServiceStep =
   // Self-registration sub-flow — offered instead of the menu above when no
   // existing member account matches the sender's WhatsApp number at all
   // (see the entry point below). memberId is "" (a sentinel, not a real
-  // account yet) for the duration of this sub-flow.
+  // account yet) for the duration of this sub-flow — it ends in a pending
+  // member_signup_requests row, not a real account; see
+  // POST /api/admin/signup-requests/:id/approve for where the real account
+  // actually gets created.
   | "signup_offer"
   | "signup_awaiting_name"
-  | "signup_awaiting_email";
+  | "signup_awaiting_email"
+  | "signup_awaiting_username";
 interface WhatsAppSelfServiceState {
   step: WhatsAppSelfServiceStep;
   memberId: string;
@@ -1377,43 +1418,13 @@ interface WhatsAppSelfServiceState {
     businessDescription?: string;
     skills?: string;
   };
-  // Holds the full name through the self-registration sub-flow's two steps
-  // (name, then email) until the account is actually created.
+  // Hold the member's answers through the self-registration sub-flow's
+  // three steps (name → email → username) until the signup request is
+  // actually submitted.
   signupFullName?: string;
+  signupEmail?: string;
 }
 
-// Turns a full name into a login username the same shape an admin would
-// type by hand (lowercase, dot-separated, letters/numbers only) — e.g.
-// "Ama Serwaa Mensah" -> "ama.serwaa", using just the first two words so
-// usernames stay short and memorable. Appends -2, -3, etc. if that's
-// already taken, so two "Ama Mensah"s both end up with a working, unique
-// username without anyone having to pick one by hand. Used by the WhatsApp
-// self-registration sub-flow below.
-async function generateUniqueUsername(fullName: string): Promise<string> {
-  const words = fullName
-    .trim()
-    .toLowerCase()
-    .split(/\s+/)
-    .map((w) => w.replace(/[^a-z0-9]/g, ""))
-    .filter(Boolean)
-    .slice(0, 2);
-  let base = words.join(".");
-  if (base.length < 3) base = `member${Date.now().toString().slice(-5)}`;
-  base = base.slice(0, 28); // leave room for a "-<n>" suffix within the 32-char username limit
-  const db = getPool();
-  let candidate = base;
-  let suffix = 1;
-  // Small, bounded loop — the member list is small enough that collisions
-  // (let alone repeated ones) are rare; the cap just guarantees this can
-  // never spin forever on a pathological input.
-  for (let attempt = 0; attempt < 50; attempt++) {
-    const existing = await db.query("SELECT 1 FROM member_accounts WHERE username = $1", [candidate]);
-    if ((existing.rowCount ?? 0) === 0) return candidate;
-    suffix += 1;
-    candidate = `${base}-${suffix}`;
-  }
-  return `${base}-${Date.now()}`;
-}
 // In-memory only — these conversations are short-lived (a minute or two of
 // back and forth), so there's no need for this to survive a restart. Keyed
 // by the sender's JID.
@@ -1575,11 +1586,15 @@ async function handleWhatsAppDirectMessage(fromJid: string, text: string): Promi
   }
 
   // Self-registration sub-flow — offered above when no existing account's
-  // phone-on-file matches this WhatsApp number. Three short steps (confirm
-  // → full name → email) and the account is live, with its own generated
-  // username and temporary password sent right back in this same chat —
-  // no admin involvement needed for the common case of a genuinely new
-  // member reaching out for the first time.
+  // phone-on-file matches this WhatsApp number. Four short steps (confirm →
+  // full name → email → desired username) and a signup REQUEST is
+  // submitted — not yet a working account. An admin reviews it in the CMS's
+  // Signup Requests tab and approves or rejects it; only approval actually
+  // creates the member_accounts row and sends login details (see
+  // POST /api/admin/signup-requests/:id/approve further down this file).
+  // This deliberately trades "instant access" for "an admin always signs
+  // off on who gets a portal login" — if that trade-off ever changes, this
+  // is the block to revisit.
   if (state.step === "signup_offer") {
     if (lower === "join" || lower.includes("join") || lower === "yes" || lower.includes("sign") || lower.includes("start")) {
       whatsappSelfServiceState.set(fromJid, { step: "signup_awaiting_name", memberId: "", expiresAt: now + WHATSAPP_SELF_SERVICE_TIMEOUT_MS });
@@ -1613,26 +1628,43 @@ async function handleWhatsAppDirectMessage(fromJid: string, text: string): Promi
       whatsappSelfServiceState.delete(fromJid);
       return "That email is already linked to an existing account. If that's you, an admin just needs to update the phone number on file for you — contact an admin, then message me again.";
     }
-    const fullName = state.signupFullName || text.trim();
+    const pendingEmail = await db.query("SELECT 1 FROM member_signup_requests WHERE email = $1 AND status = 'pending'", [email]);
+    if ((pendingEmail.rowCount ?? 0) > 0) {
+      whatsappSelfServiceState.delete(fromJid);
+      return "There's already a pending request with that email, waiting on an admin to review it. No need to submit another — you'll be messaged right here once it's decided.";
+    }
+    whatsappSelfServiceState.set(fromJid, {
+      step: "signup_awaiting_username",
+      memberId: "",
+      signupFullName: state.signupFullName,
+      signupEmail: email,
+      expiresAt: now + WHATSAPP_SELF_SERVICE_TIMEOUT_MS,
+    });
+    return "Last step — pick a username you'd like to log in with (3-32 characters: letters, numbers, dots, underscores, or hyphens only — e.g. ama.serwaa).";
+  }
+
+  if (state.step === "signup_awaiting_username") {
+    const username = text.trim().toLowerCase();
+    if (!/^[a-z0-9._-]{3,32}$/.test(username)) {
+      return "That doesn't quite work — usernames are 3-32 characters: letters, numbers, dots, underscores, or hyphens only (no spaces). Try another, or reply 'cancel' to stop.";
+    }
+    const takenAccount = await db.query("SELECT 1 FROM member_accounts WHERE username = $1", [username]);
+    const takenRequest = await db.query("SELECT 1 FROM member_signup_requests WHERE username = $1 AND status = 'pending'", [username]);
+    if ((takenAccount.rowCount ?? 0) > 0 || (takenRequest.rowCount ?? 0) > 0) {
+      return "That username is already taken. Please try a different one, or reply 'cancel' to stop.";
+    }
+    const fullName = state.signupFullName || "Member";
+    const email = state.signupEmail || "";
     const phone = normalizePhoneToLocal(fromJid.split("@")[0]) || fromJid.split("@")[0];
-    const username = await generateUniqueUsername(fullName);
-    const tempPassword = generateTempPassword();
-    const passwordHash = await bcrypt.hash(tempPassword, 10);
-    const id = `member-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const id = `signup-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     await db.query(
-      `INSERT INTO member_accounts (id, full_name, username, email, password_hash, bio, phone, dues_amount, executive_dues_amount, currency, status, must_change_password)
-       VALUES ($1,$2,$3,$4,$5,'',$6,0,0,$7,'active',true)`,
-      [id, fullName, username, email, passwordHash, phone, getDuesCurrency()]
+      `INSERT INTO member_signup_requests (id, full_name, username, email, phone, status)
+       VALUES ($1,$2,$3,$4,$5,'pending')`,
+      [id, fullName, username, email, phone]
     );
     whatsappSelfServiceState.delete(fromJid);
-    console.log(`[WhatsApp Self-Service] New member account self-registered via WhatsApp DM: ${id} (${username}).`);
-    // Best-effort, same as the admin-created-account flow — a failed/mocked
-    // email should never block signup since the member already has
-    // everything they need right here in this chat either way.
-    sendWelcomeEmail(fullName, email, username, tempPassword).catch((err) => {
-      console.error("[WhatsApp Self-Service] Welcome email failed for self-registered member:", err);
-    });
-    return `✅ You're all set, ${fullName.split(" ")[0]}!\n\nUsername: *${username}*\nTemporary Password: *${tempPassword}*\n\nLog in at ${getSiteUrl()} (tap "Member Login") — you'll be asked to set your own password right away. We also emailed these details to ${email} as a backup.\n\nOnce you're in, swing by your Profile tab and add a short bio — it helps the rest of the family get to know you! 🙌`;
+    console.log(`[WhatsApp Self-Service] New signup request submitted via WhatsApp DM: ${id} (username ${username}).`);
+    return `✅ Thanks, ${fullName.split(" ")[0]}! Your request (username *${username}*) has been submitted for admin review.\n\nYou'll get a message right here with your login details as soon as it's approved. Thanks for your patience! 🙏`;
   }
 
   // Shouldn't be reachable, but fall back safely rather than leaving the
@@ -1787,6 +1819,125 @@ app.post("/api/admin/members", async (req, res) => {
   } catch (error: any) {
     console.error("Failed to create member account:", error);
     res.status(500).json({ success: false, error: error.message || "Failed to create member account." });
+  }
+});
+
+// --- Member Portal account signup requests (WhatsApp self-registration) ---
+//
+// A member submits one of these via the WhatsApp bot's JOIN flow (see
+// handleWhatsAppDirectMessage's signup_* steps above) — it's just a request
+// at that point, not a working login. An admin reviews it here (surfaced in
+// the CMS's Signup Requests tab) and either approves it, which is what
+// actually creates the member_accounts row and sends login details, or
+// rejects it, which just lets the member know via WhatsApp DM.
+
+app.get("/api/admin/signup-requests", async (req, res) => {
+  try {
+    const db = getPool();
+    const result = await db.query("SELECT * FROM member_signup_requests ORDER BY created_at DESC");
+    res.json({ success: true, data: result.rows.map(mapSignupRequestRow) });
+  } catch (error: any) {
+    console.error("Failed to load signup requests:", error);
+    res.status(500).json({ success: false, error: error.message || "Failed to load signup requests." });
+  }
+});
+
+app.post("/api/admin/signup-requests/:id/approve", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const db = getPool();
+    const reqRes = await db.query("SELECT * FROM member_signup_requests WHERE id = $1", [id]);
+    const request = reqRes.rows[0];
+    if (!request) return res.status(404).json({ success: false, error: "Signup request not found." });
+    if (request.status !== "pending") {
+      return res.status(400).json({ success: false, error: `This request was already ${request.status}.` });
+    }
+
+    // Re-check for collisions at approval time too — time may have passed
+    // since the request came in, and either the username or email could
+    // have been claimed in the meantime by an admin manually creating an
+    // account, or by another signup request already approved.
+    const existingUsername = await db.query("SELECT 1 FROM member_accounts WHERE username = $1", [request.username]);
+    if ((existingUsername.rowCount ?? 0) > 0) {
+      return res.status(409).json({
+        success: false,
+        error: "That username has since been taken by another account. Reject this request and ask the member to try again with a different username.",
+      });
+    }
+    const existingEmail = await db.query("SELECT 1 FROM member_accounts WHERE email = $1", [request.email]);
+    if ((existingEmail.rowCount ?? 0) > 0) {
+      return res.status(409).json({ success: false, error: "That email is already linked to another account." });
+    }
+
+    const tempPassword = generateTempPassword();
+    const passwordHash = await bcrypt.hash(tempPassword, 10);
+    const memberId = `member-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const created = await db.query(
+      `INSERT INTO member_accounts (id, full_name, username, email, password_hash, bio, phone, dues_amount, executive_dues_amount, currency, status, must_change_password)
+       VALUES ($1,$2,$3,$4,$5,'',$6,0,0,$7,'active',true) RETURNING *`,
+      [memberId, request.full_name, request.username, request.email, passwordHash, request.phone, getDuesCurrency()]
+    );
+    await db.query("UPDATE member_signup_requests SET status = 'approved', decided_at = now() WHERE id = $1", [id]);
+
+    // Best-effort on both channels — a failed/mocked email or an
+    // unreachable WhatsApp connection should never block the approval
+    // itself; the CMS response below tells the admin what actually sent so
+    // they know whether to share the credentials with the member some
+    // other way.
+    const emailSent = await sendWelcomeEmail(request.full_name, request.email, request.username, tempPassword);
+    let whatsappSent = false;
+    const jid = phoneToWhatsAppJid(request.phone);
+    if (jid) {
+      whatsappSent = await sendWhatsAppText(
+        jid,
+        `✅ You're approved, ${String(request.full_name).split(" ")[0]}!\n\nUsername: *${request.username}*\nTemporary Password: *${tempPassword}*\n\nLog in at ${getSiteUrl()} (tap "Member Login") — you'll be asked to set your own password right away.`
+      );
+    }
+
+    res.json({ success: true, data: mapMemberRow(created.rows[0]), emailSent, mailMock: isMockMailEnabled(), whatsappSent });
+  } catch (error: any) {
+    console.error("Failed to approve signup request:", error);
+    res.status(500).json({ success: false, error: error.message || "Failed to approve signup request." });
+  }
+});
+
+app.post("/api/admin/signup-requests/:id/reject", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const db = getPool();
+    const result = await db.query(
+      "UPDATE member_signup_requests SET status = 'rejected', decided_at = now() WHERE id = $1 AND status = 'pending' RETURNING *",
+      [id]
+    );
+    if (result.rowCount === 0) return res.status(404).json({ success: false, error: "Pending signup request not found." });
+    const request = result.rows[0];
+    // Best-effort — their chat with the bot may have expired since they
+    // submitted the request, but the message still goes to the right
+    // WhatsApp number either way.
+    const jid = phoneToWhatsAppJid(request.phone);
+    if (jid) {
+      await sendWhatsAppText(
+        jid,
+        `Hi ${String(request.full_name).split(" ")[0]}, your DE ELITES FAMILY account request wasn't approved. Please contact an admin if you have questions.`
+      );
+    }
+    res.json({ success: true, data: mapSignupRequestRow(request) });
+  } catch (error: any) {
+    console.error("Failed to reject signup request:", error);
+    res.status(500).json({ success: false, error: error.message || "Failed to reject signup request." });
+  }
+});
+
+app.delete("/api/admin/signup-requests/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const db = getPool();
+    const result = await db.query("DELETE FROM member_signup_requests WHERE id = $1", [id]);
+    if (result.rowCount === 0) return res.status(404).json({ success: false, error: "Signup request not found." });
+    res.json({ success: true });
+  } catch (error: any) {
+    console.error("Failed to delete signup request:", error);
+    res.status(500).json({ success: false, error: error.message || "Failed to delete signup request." });
   }
 });
 

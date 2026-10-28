@@ -542,13 +542,13 @@ number matches an existing active member's phone-on-file. Watch
 action it takes logs a line (without ever logging the password itself), so
 you can confirm it fired without having to take the member's word for it.
 
-### WhatsApp self-registration (brand-new members create their own login)
+### WhatsApp self-registration (brand-new members request their own login)
 
 The menu above only shows up once an account already exists with that
 member's phone number on file. If **no** account's phone matches at all —
 i.e. this looks like a genuinely new member who's never had a portal login
-— the bot offers to create one right there in the chat instead of hitting a
-dead end:
+— the bot offers to start a signup request right there in the chat instead
+of hitting a dead end:
 
 ```
 👋 Hi! I couldn't find a DE ELITES FAMILY account linked to this
@@ -558,43 +558,64 @@ Want to set one up right now? It only takes a minute. Reply JOIN to
 get started, or ignore this message if that wasn't you.
 ```
 
-Replying **JOIN** asks for their full name, then their email address
-(used for the welcome email and later for things like Paystack receipts),
-and that's it — the account is created immediately with:
+Replying **JOIN** asks three quick questions — full name, email address
+(for payment receipts and account recovery), then a **username they pick
+themselves** (3-32 characters: letters, numbers, dots, underscores, or
+hyphens — the bot checks it isn't already taken, by a real account or by
+someone else's still-pending request, before accepting it). Their phone is
+taken automatically from the WhatsApp number they messaged from.
 
-- **Username**, auto-generated from their name (e.g. "Ama Serwaa Mensah" →
-  `ama.serwaa`; a number gets appended if that's already taken by someone
-  else, e.g. `ama.serwaa-2`) — no admin has to invent or type one.
-- **Temporary password**, auto-generated the same way a password reset
-  generates one.
-- **Phone**, taken directly from the WhatsApp number they messaged from
-  (so the self-service menu above immediately recognizes them on any
-  future message).
+**This does not create a working login.** It submits a *request* —
+reviewed and decided by an admin in the CMS's **10. Signup Requests** tab,
+the same pending → approved/rejected shape as the "Join the Movement"
+application form, just for "I want a portal login" specifically rather
+than the full membership application. The bot tells them as much:
 
-The username and temporary password are sent straight back in that same
-chat, and also emailed to them as a backup (same `sendWelcomeEmail` flow
-as admin-created accounts, including the same mock-mode behavior if SMTP
-isn't configured yet — see "Welcome emails" above). They're flagged
-`must_change_password`, so the portal walks them through setting their own
-password the moment they first log in — then a gentle (skippable) banner
-on their dashboard points them at the Profile tab to add a short bio.
+```
+✅ Thanks, Ama! Your request (username ama.serwaa) has been submitted
+for admin review.
+
+You'll get a message right here with your login details as soon as
+it's approved. Thanks for your patience! 🙏
+```
+
+**Reviewing requests (CMS → 10. Signup Requests):** each row shows the
+name, chosen username, email, phone, and status, with **Approve**/**Reject**
+buttons on anything still pending.
+
+- **Approve** creates the real member account using exactly the username
+  they chose, generates a temporary password (same as an admin-created
+  account), and sends both straight back to them via WhatsApp DM — plus
+  email as a backup, if SMTP is configured (see "Welcome emails" above;
+  mock mode applies the same way here too). They're flagged
+  `must_change_password`, so the portal walks them through setting their
+  own password the moment they first log in — then the gentle (skippable)
+  bio-nudge banner takes over from there.
+- **Reject** just sends them a WhatsApp message letting them know it wasn't
+  approved, with no account created.
+- The trash icon removes a request from the list entirely (e.g. obvious
+  spam) without notifying anyone.
 
 **This means you don't need to know anyone's username to roll out logins**
 — just get the word out (e.g. post in the WhatsApp group) that members
-should message the bot directly and reply "JOIN" to set up their own
-account. No bulk list, no admin typing usernames one by one.
+should message the bot directly and reply "JOIN". You review and approve
+each one from the CMS as they come in — no bulk list, no admin typing
+usernames one by one, and nobody gets a working login without you signing
+off on it first.
 
-**One safety check:** if the email they give is already attached to an
-existing account (e.g. they already have a portal login, just under a
-phone number that's wrong/outdated/unset), signup is refused with a message
-telling them to contact an admin — this prevents accidentally creating a
-duplicate account for someone who already has one. An admin fixing that
-member's phone number in the CMS (Member Accounts tab) is what lets the
-self-service menu recognize them correctly afterward.
+**One safety check beyond admin review:** if the email they give is
+already attached to an existing account (e.g. they already have a portal
+login, just under a phone number that's wrong/outdated/unset), the request
+is refused up front with a message telling them to contact an admin —
+this prevents a duplicate account ever reaching your review queue in the
+first place. An admin fixing that member's phone number in the CMS
+(Member Accounts tab) is what lets the self-service menu recognize them
+correctly afterward.
 
 **Testing it:** message the bot from a phone number that has never been
 used as any member's phone-on-file, with an email address that isn't
-already in the system, and reply JOIN when prompted.
+already in the system, and reply JOIN when prompted. Then check the
+Signup Requests tab and approve it.
 
 ### Member Data Collection & Profile Update (profession, business, skills)
 

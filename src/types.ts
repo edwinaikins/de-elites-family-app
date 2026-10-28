@@ -380,5 +380,23 @@ export interface MemberApplication {
   submittedAt: string;
 }
 
+// A request to create a Member Portal login, submitted by a member via the
+// WhatsApp self-service bot's "JOIN" flow — distinct from MemberApplication
+// above (the full public "Join the Movement" form). Just the essentials
+// collected conversationally: full name, email, and a username the member
+// chose themselves. Reviewed by an admin in the CMS's Signup Requests tab;
+// approving one is what actually creates the real MemberAccount and sends
+// login details (see POST /api/admin/signup-requests/:id/approve) — this
+// record alone never grants portal access.
+export interface MemberSignupRequest {
+  id: string;
+  fullName: string;
+  username: string;
+  email: string;
+  phone: string;
+  status: 'pending' | 'approved' | 'rejected';
+  createdAt: string;
+  decidedAt?: string;
+}
 
 

@@ -10,7 +10,7 @@ import {
 import { useCms } from '../context/CmsContext';
 import { ImageUpload } from './ImageUpload';
 import { BulkMediaUpload } from './BulkMediaUpload';
-import { Pillar, Leader, GalleryItem, EliteEvent, MediaItem, HeroConfig, CmsUser, MemberApplication, MemberAccount, WelfareDuesPayment, EventPayment, MemberBill, AdminEventRsvp, AdminPaymentRecord, ManualPaymentInput, AdminPaymentUpdate } from '../types';
+import { Pillar, Leader, GalleryItem, EliteEvent, MediaItem, HeroConfig, CmsUser, MemberApplication, MemberAccount, WelfareDuesPayment, EventPayment, MemberBill, AdminEventRsvp, AdminPaymentRecord, ManualPaymentInput, AdminPaymentUpdate, MemberSignupRequest } from '../types';
 import {
   fetchMemberApplications, updateMemberApplicationStatus, deleteMemberApplication, UploadedMediaItem,
   fetchWhatsAppStatus, fetchWhatsAppGroups, resendApplicationNotifications, WhatsAppStatus,
@@ -22,6 +22,7 @@ import {
   createManualPayment, deleteAdminPayment, updateAdminPayment,
   createBill, updateBill, deleteBill,
   fetchEventRsvpsAdmin,
+  fetchSignupRequests, approveSignupRequest, rejectSignupRequest, deleteSignupRequest,
 } from '../lib/memberClient';
 
 interface CmsDashboardProps {
@@ -29,7 +30,7 @@ interface CmsDashboardProps {
   onClose: () => void;
 }
 
-type TabType = 'pillars' | 'leaders' | 'gallery' | 'events' | 'hero' | 'users' | 'applications' | 'memberAccounts' | 'payments';
+type TabType = 'pillars' | 'leaders' | 'gallery' | 'events' | 'hero' | 'users' | 'applications' | 'memberAccounts' | 'payments' | 'signupRequests';
 
 function currentPeriod(): string {
   const now = new Date();
@@ -156,6 +157,16 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
   const [editPaymentSaving, setEditPaymentSaving] = useState(false);
   const [editPaymentError, setEditPaymentError] = useState('');
 
+  // WhatsApp self-registration requests ("Signup Requests" tab) — a member
+  // JOINs via the bot, submits name/email/username, and it lands here
+  // pending admin review. decidingId tracks which row's approve/reject is
+  // in flight so only that row's buttons show a spinner.
+  const [signupRequests, setSignupRequests] = useState<MemberSignupRequest[]>([]);
+  const [signupRequestsLoading, setSignupRequestsLoading] = useState(false);
+  const [signupRequestsError, setSignupRequestsError] = useState<string | null>(null);
+  const [decidingSignupRequestId, setDecidingSignupRequestId] = useState<string | null>(null);
+  const [signupRequestNotice, setSignupRequestNotice] = useState<string | null>(null);
+
   // "Log Manual Payment" form — for cash, bank transfer, or any payment
   // collected outside Paystack, so it still shows up in reconciliation.
   const [showManualPaymentForm, setShowManualPaymentForm] = useState(false);
@@ -276,6 +287,65 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
       }
     }
   }, [isOpen, activeTab]);
+
+  // Load WhatsApp self-registration requests when that tab is opened
+  React.useEffect(() => {
+    if (isOpen && activeTab === 'signupRequests') {
+      setSignupRequestsLoading(true);
+      setSignupRequestsError(null);
+      fetchSignupRequests()
+        .then(setSignupRequests)
+        .catch((err: any) => setSignupRequestsError(err.message || 'Failed to load signup requests'))
+        .finally(() => setSignupRequestsLoading(false));
+    }
+  }, [isOpen, activeTab]);
+
+  const handleApproveSignupRequest = async (r: MemberSignupRequest) => {
+    setSignupRequestNotice(null);
+    setDecidingSignupRequestId(r.id);
+    try {
+      const { emailSent, mailMock, whatsappSent } = await approveSignupRequest(r.id);
+      setSignupRequests((prev) => prev.map((x) => (x.id === r.id ? { ...x, status: 'approved' } : x)));
+      // Keep the Member Accounts list in sync so the newly-created account
+      // shows up there without needing to switch tabs and back.
+      loadMemberAccounts();
+      if (whatsappSent) {
+        setSignupRequestNotice(`Approved ${r.fullName} — login details sent via WhatsApp${emailSent && !mailMock ? ' and email' : ''}.`);
+      } else if (emailSent && !mailMock) {
+        setSignupRequestNotice(`Approved ${r.fullName} — login details emailed (WhatsApp delivery didn't go through — share the credentials with them directly if needed).`);
+      } else {
+        setSignupRequestNotice(`Approved ${r.fullName} — neither WhatsApp nor email delivery confirmed (email may be in Test Mode). Check Member Accounts and share their credentials directly.`);
+      }
+    } catch (err: any) {
+      setSignupRequestsError(err.message || 'Failed to approve signup request.');
+    } finally {
+      setDecidingSignupRequestId(null);
+    }
+  };
+
+  const handleRejectSignupRequest = async (r: MemberSignupRequest) => {
+    if (!window.confirm(`Reject ${r.fullName}'s account request? They'll be notified via WhatsApp.`)) return;
+    setSignupRequestNotice(null);
+    setDecidingSignupRequestId(r.id);
+    try {
+      await rejectSignupRequest(r.id);
+      setSignupRequests((prev) => prev.map((x) => (x.id === r.id ? { ...x, status: 'rejected' } : x)));
+    } catch (err: any) {
+      setSignupRequestsError(err.message || 'Failed to reject signup request.');
+    } finally {
+      setDecidingSignupRequestId(null);
+    }
+  };
+
+  const handleDeleteSignupRequest = async (r: MemberSignupRequest) => {
+    if (!window.confirm(`Permanently remove this signup request from ${r.fullName}? This cannot be undone.`)) return;
+    try {
+      await deleteSignupRequest(r.id);
+      setSignupRequests((prev) => prev.filter((x) => x.id !== r.id));
+    } catch (err: any) {
+      setSignupRequestsError(err.message || 'Failed to delete signup request.');
+    }
+  };
 
   const filteredPayments = React.useMemo(() => {
     const search = paymentsSearch.trim().toLowerCase();
@@ -1121,7 +1191,8 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                 { type: 'users', label: '6. User Accounts', count: localUsers.length, desc: 'Manage CMS Users' },
                 { type: 'applications', label: '7. Applications', count: applications.length, desc: 'Prospective Members' },
                 { type: 'memberAccounts', label: '8. Member Accounts', count: memberAccounts.length, desc: 'Portal Logins & Dues' },
-                { type: 'payments', label: '9. Payments', count: payments.length, desc: 'Reconciliation & Exports' }
+                { type: 'payments', label: '9. Payments', count: payments.length, desc: 'Reconciliation & Exports' },
+                { type: 'signupRequests', label: '10. Signup Requests', count: signupRequests.filter((r) => r.status === 'pending').length, desc: 'WhatsApp Join Requests' }
               ].map((item) => (
                 <button
                   key={item.type}
@@ -1164,7 +1235,7 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
 
               {/* Action and Save buttons */}
               <div className="flex items-center gap-3">
-                {activeTab !== 'pillars' && activeTab !== 'hero' && activeTab !== 'applications' && activeTab !== 'memberAccounts' && (
+                {activeTab !== 'pillars' && activeTab !== 'hero' && activeTab !== 'applications' && activeTab !== 'memberAccounts' && activeTab !== 'signupRequests' && (
                   <button
                     onClick={() => {
                       if (activeTab === 'leaders') handleAddLeader();
@@ -1178,7 +1249,7 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                   </button>
                 )}
 
-                {activeTab !== 'applications' && activeTab !== 'memberAccounts' &&
+                {activeTab !== 'applications' && activeTab !== 'memberAccounts' && activeTab !== 'signupRequests' &&
                  activeTab !== 'leaders' && activeTab !== 'gallery' && activeTab !== 'events' && (
                   <button
                     onClick={() => handleSaveSection(activeTab)}
@@ -3622,6 +3693,123 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                                   </tr>
                                 )}
                               </React.Fragment>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {activeTab === 'signupRequests' && (
+                <div className="flex-1 overflow-y-auto max-w-5xl w-full mx-auto space-y-4">
+                  <div className="bg-charcoal-card rounded-lg border border-gray-900 p-4">
+                    <h4 className="font-display text-xs font-black text-luxury-gold uppercase tracking-widest mb-1">
+                      WhatsApp Signup Requests
+                    </h4>
+                    <p className="text-[10px] text-gray-500 font-sans leading-relaxed">
+                      When a member messages the bot and replies JOIN, they submit a request here instead of
+                      getting instant access. Approving creates their real portal login and sends it to them
+                      (WhatsApp DM, and email if SMTP is configured) — rejecting just lets them know via WhatsApp.
+                    </p>
+                  </div>
+
+                  {signupRequestNotice && (
+                    <div className="flex items-center gap-2 text-xs text-luxury-gold bg-luxury-gold/10 border border-luxury-gold/20 p-3 rounded">
+                      <Check className="w-4 h-4 shrink-0" />
+                      <span>{signupRequestNotice}</span>
+                    </div>
+                  )}
+                  {signupRequestsError && (
+                    <div className="flex items-center gap-2 text-xs text-red-500 bg-red-500/10 border border-red-500/20 p-3 rounded">
+                      <AlertCircle className="w-4 h-4 shrink-0" />
+                      <span>{signupRequestsError}</span>
+                    </div>
+                  )}
+
+                  {signupRequestsLoading ? (
+                    <div className="py-16 text-center text-gray-500 text-xs flex flex-col items-center gap-2">
+                      <Loader2 className="w-6 h-6 animate-spin text-luxury-gold/50" />
+                      Loading signup requests...
+                    </div>
+                  ) : signupRequests.length === 0 ? (
+                    <div className="py-16 text-center text-gray-500 text-xs">
+                      <UserCheck className="w-8 h-8 text-luxury-gold/25 mx-auto mb-3" />
+                      No signup requests yet.
+                    </div>
+                  ) : (
+                    <div className="bg-charcoal-card rounded-lg border border-gray-900 overflow-x-auto">
+                      <table className="w-full text-left text-xs min-w-[720px]">
+                        <thead>
+                          <tr className="border-b border-gray-900 text-[9px] font-black uppercase tracking-widest text-gray-500">
+                            <th className="px-4 py-3">Requested</th>
+                            <th className="px-4 py-3">Name</th>
+                            <th className="px-4 py-3">Username</th>
+                            <th className="px-4 py-3">Email</th>
+                            <th className="px-4 py-3">Phone</th>
+                            <th className="px-4 py-3">Status</th>
+                            <th className="px-4 py-3 text-right">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {signupRequests.map((r) => {
+                            const deciding = decidingSignupRequestId === r.id;
+                            return (
+                              <tr key={r.id} className="border-b border-gray-900/60 hover:bg-jet-black/60 transition-colors">
+                                <td className="px-4 py-3 font-mono text-[10px] text-gray-500 whitespace-nowrap">
+                                  {new Date(r.createdAt).toLocaleDateString()}
+                                </td>
+                                <td className="px-4 py-3 text-white font-bold max-w-[160px] truncate">{r.fullName}</td>
+                                <td className="px-4 py-3 font-mono text-gray-300">{r.username}</td>
+                                <td className="px-4 py-3 text-gray-400 max-w-[180px] truncate">{r.email}</td>
+                                <td className="px-4 py-3 text-gray-400 whitespace-nowrap">{r.phone}</td>
+                                <td className="px-4 py-3">
+                                  <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded border ${
+                                    r.status === 'approved' ? 'bg-green-950/30 text-green-400 border-green-900/40'
+                                    : r.status === 'rejected' ? 'bg-red-950/30 text-red-400 border-red-900/40'
+                                    : 'bg-yellow-950/30 text-yellow-400 border-yellow-900/40'
+                                  }`}>
+                                    {r.status}
+                                  </span>
+                                </td>
+                                <td className="px-4 py-3 text-right">
+                                  <div className="flex items-center justify-end gap-1.5">
+                                    {r.status === 'pending' && (
+                                      <>
+                                        <button
+                                          type="button"
+                                          onClick={() => handleApproveSignupRequest(r)}
+                                          disabled={deciding}
+                                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded border border-green-900/50 text-green-400 hover:bg-green-950/30 transition-colors text-[9px] font-black uppercase tracking-widest disabled:opacity-50"
+                                          title="Approve — creates their login"
+                                        >
+                                          {deciding ? <Loader2 size={11} className="animate-spin" /> : <Check size={11} />}
+                                          Approve
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => handleRejectSignupRequest(r)}
+                                          disabled={deciding}
+                                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded border border-red-900/50 text-red-400 hover:bg-red-950/30 transition-colors text-[9px] font-black uppercase tracking-widest disabled:opacity-50"
+                                          title="Reject"
+                                        >
+                                          <X size={11} />
+                                          Reject
+                                        </button>
+                                      </>
+                                    )}
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDeleteSignupRequest(r)}
+                                      className="inline-flex items-center justify-center p-1.5 rounded border border-gray-800 text-gray-500 hover:text-red-400 hover:border-red-900/60 hover:bg-red-950/20 transition-colors"
+                                      title="Remove from this list"
+                                    >
+                                      <Trash2 size={12} />
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
                             );
                           })}
                         </tbody>

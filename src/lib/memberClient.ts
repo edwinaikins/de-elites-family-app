@@ -1,4 +1,4 @@
-import { MemberAccount, MemberProfileUpdate, WelfareDuesPayment, EventPayment, MemberBill, EventRsvp, EventRsvpResponse, AdminEventRsvp, PaymentInitResponse, DuesBalance, AdminPaymentRecord, ManualPaymentInput, AdminPaymentUpdate } from '../types';
+import { MemberAccount, MemberProfileUpdate, WelfareDuesPayment, EventPayment, MemberBill, EventRsvp, EventRsvpResponse, AdminEventRsvp, PaymentInitResponse, DuesBalance, AdminPaymentRecord, ManualPaymentInput, AdminPaymentUpdate, MemberSignupRequest } from '../types';
 
 async function handleJson<T>(res: Response): Promise<T> {
   const result = await res.json().catch(() => ({}));
@@ -236,6 +236,45 @@ export async function updateMemberAccount(
 
 export async function deleteMemberAccount(id: string): Promise<void> {
   const res = await fetch(`/api/admin/members/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  await handleJson(res);
+}
+
+// --- Member Portal account signup requests (WhatsApp self-registration) ---
+// A member submits one of these via the WhatsApp bot's JOIN flow. Approving
+// is what actually creates the real member account and sends login
+// details; rejecting just lets the member know via WhatsApp DM.
+
+export async function fetchSignupRequests(): Promise<MemberSignupRequest[]> {
+  const res = await fetch('/api/admin/signup-requests');
+  return handleJson(res);
+}
+
+// emailSent/mailMock/whatsappSent report which of the two delivery channels
+// actually got the new member's login details to them — same "best-effort,
+// tell the admin what happened" pattern as createMemberAccount above.
+export async function approveSignupRequest(
+  id: string
+): Promise<{ member: MemberAccount; emailSent: boolean; mailMock: boolean; whatsappSent: boolean }> {
+  const res = await fetch(`/api/admin/signup-requests/${encodeURIComponent(id)}/approve`, { method: 'POST' });
+  const result = await res.json().catch(() => ({}));
+  if (!res.ok || !result.success) {
+    throw new Error(result.error || 'Failed to approve signup request');
+  }
+  return {
+    member: result.data as MemberAccount,
+    emailSent: !!result.emailSent,
+    mailMock: !!result.mailMock,
+    whatsappSent: !!result.whatsappSent,
+  };
+}
+
+export async function rejectSignupRequest(id: string): Promise<MemberSignupRequest> {
+  const res = await fetch(`/api/admin/signup-requests/${encodeURIComponent(id)}/reject`, { method: 'POST' });
+  return handleJson(res);
+}
+
+export async function deleteSignupRequest(id: string): Promise<void> {
+  const res = await fetch(`/api/admin/signup-requests/${encodeURIComponent(id)}`, { method: 'DELETE' });
   await handleJson(res);
 }
 
