@@ -509,9 +509,10 @@ What would you like to do?
 1️⃣ Reset my password
 2️⃣ Update my phone number
 3️⃣ Update my email address
-4️⃣ Cancel
+4️⃣ Update my profile (profession, business, skills)
+5️⃣ Cancel
 
-Just reply with a number (1-4).
+Just reply with a number (1-5).
 ```
 
 Replying "1" (or just typing "reset" / "password" — it's forgiving about
@@ -520,9 +521,11 @@ back in that same chat, and flags the account so they're prompted to set
 their own password the moment they next log in — same `must_change_password`
 behavior as an admin-triggered reset. Replying "2" or "3" asks for the new
 phone number or email, validates it (a real-looking number; an email that
-isn't already in use by someone else), and updates it directly. "Cancel"
-backs out at any point. The conversation auto-expires after 10 minutes of
-inactivity, so an old abandoned chat can't unexpectedly resume later.
+isn't already in use by someone else), and updates it directly. Replying "4"
+walks them through the profession/business/skills questions covered in the
+next section. "Cancel" backs out at any point. The conversation auto-expires
+after 10 minutes of inactivity, so an old abandoned chat can't unexpectedly
+resume later.
 
 **Testing it:** from a phone that is NOT the one linked as the bot
 (message the bot's own WhatsApp number from a different phone), and whose
@@ -530,6 +533,42 @@ number matches an existing active member's phone-on-file. Watch
 `journalctl --user -u de-elites-family -f` while you do — every self-service
 action it takes logs a line (without ever logging the password itself), so
 you can confirm it fired without having to take the member's word for it.
+
+### Member Data Collection & Profile Update (profession, business, skills)
+
+A short, optional profile on top of each member's account — their
+profession, a business name, what that business does, and a freeform list
+of skills — so the family can know one another better, promote members'
+businesses internally, and spot opportunities to collaborate. All four
+fields are freeform text (no fixed categories), and all are optional — a
+member can fill in just one, all four, or none.
+
+**Visibility: admin-only.** These fields are never shown in any
+member-facing directory or public page. The only place they're visible is
+the CMS's Member Accounts tab, where each member's entry shows a read-only
+"Profession, Business & Skills (self-edited, admin-only)" block if they've
+filled anything in — the exact same display pattern as the existing
+"Member's Bio" block right above it. Like the bio field, these are
+member-edited only: there's no admin edit form for them, by design, so the
+member's own words are what admins see.
+
+**Two ways a member can fill this in — either works, and both update the
+same fields:**
+
+1. **The Member Portal web form** — logged-in members see a "Profession,
+   Business & Skills" section on their Profile tab (right below their bio),
+   with a Profession input, Business Name input, a short "what your
+   business does" textarea, and a Skills input (comma-separated, e.g.
+   "Accounting, Graphic Design, Event Planning"). One shared Save button
+   updates all four at once.
+2. **The WhatsApp bot** — messaging the bot directly and choosing option 4
+   ("Update my profile") from the self-service menu above walks through the
+   same four questions one at a time (profession → business name → business
+   description → skills), each skippable by replying "skip", and saves
+   everything together once the last question is answered.
+
+**Zero extra configuration** — like the rest of the self-service bot, this
+needs no new env var; it's live the moment the WhatsApp connection is up.
 
 ### Mobile Money
 

@@ -2760,6 +2760,28 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                                 </div>
                               )}
 
+                              {(m.profession || m.businessName || m.businessDescription || m.skills) && (
+                                <div className="pt-4 border-t border-gray-900">
+                                  <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-500 block mb-1.5">
+                                    Profession, Business & Skills (self-edited, admin-only)
+                                  </label>
+                                  <div className="text-xs text-gray-300 leading-relaxed bg-jet-black border border-gray-900 rounded p-3 space-y-1.5">
+                                    {m.profession && (
+                                      <p><span className="text-gray-500">Profession:</span> {m.profession}</p>
+                                    )}
+                                    {m.businessName && (
+                                      <p><span className="text-gray-500">Business:</span> {m.businessName}</p>
+                                    )}
+                                    {m.businessDescription && (
+                                      <p><span className="text-gray-500">What they do:</span> {m.businessDescription}</p>
+                                    )}
+                                    {m.skills && (
+                                      <p><span className="text-gray-500">Skills:</span> {m.skills}</p>
+                                    )}
+                                  </div>
+                                </div>
+                              )}
+
                               <div className="pt-4 border-t border-gray-900 grid grid-cols-1 md:grid-cols-2 gap-6">
                                 <div>
                                   <h4 className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-500 mb-2 flex items-center gap-1.5">

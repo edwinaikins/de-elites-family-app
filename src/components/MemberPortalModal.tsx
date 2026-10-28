@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import {
   X, LogIn, LogOut, Crown, User, Wallet, Ticket, AlertCircle,
   CheckCircle2, Loader2, Save, KeyRound, Calendar, MapPin, Clock,
-  CreditCard,
+  CreditCard, Briefcase,
 } from 'lucide-react';
 import { useMemberAuth } from '../context/MemberAuthContext';
 import { useCms } from '../context/CmsContext';
@@ -70,6 +70,18 @@ export default function MemberPortalModal() {
   const [bioSaving, setBioSaving] = useState(false);
   const [bioSaved, setBioSaved] = useState(false);
 
+  // Profession/business/skills editor state — "Member Data Collection &
+  // Profile Update". Freeform fields, saved together via one Save button,
+  // mirroring the bio editor above exactly. Admin-only visibility (shown
+  // read-only in the CMS's Member Accounts tab) — never surfaced in any
+  // member-facing directory.
+  const [professionDraft, setProfessionDraft] = useState('');
+  const [businessNameDraft, setBusinessNameDraft] = useState('');
+  const [businessDescriptionDraft, setBusinessDescriptionDraft] = useState('');
+  const [skillsDraft, setSkillsDraft] = useState('');
+  const [professionalInfoSaving, setProfessionalInfoSaving] = useState(false);
+  const [professionalInfoSaved, setProfessionalInfoSaved] = useState(false);
+
   // Profile picture upload state
   const [imageSaving, setImageSaving] = useState(false);
   const [imageSaved, setImageSaved] = useState(false);
@@ -120,6 +132,14 @@ export default function MemberPortalModal() {
 
   useEffect(() => {
     if (member) setBioDraft(member.bio || '');
+  }, [member?.id]);
+
+  useEffect(() => {
+    if (!member) return;
+    setProfessionDraft(member.profession || '');
+    setBusinessNameDraft(member.businessName || '');
+    setBusinessDescriptionDraft(member.businessDescription || '');
+    setSkillsDraft(member.skills || '');
   }, [member?.id]);
 
   useEffect(() => {
@@ -222,6 +242,25 @@ export default function MemberPortalModal() {
       // swallow — updateBio already leaves prior state intact on failure
     } finally {
       setBioSaving(false);
+    }
+  };
+
+  const handleSaveProfessionalInfo = async () => {
+    setProfessionalInfoSaving(true);
+    setProfessionalInfoSaved(false);
+    try {
+      await updateBio({
+        profession: professionDraft,
+        businessName: businessNameDraft,
+        businessDescription: businessDescriptionDraft,
+        skills: skillsDraft,
+      });
+      setProfessionalInfoSaved(true);
+      setTimeout(() => setProfessionalInfoSaved(false), 3000);
+    } catch (err) {
+      // swallow — updateBio already leaves prior state intact on failure
+    } finally {
+      setProfessionalInfoSaving(false);
     }
   };
 
@@ -660,6 +699,87 @@ export default function MemberPortalModal() {
                       {bioSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
                       Save Bio
                     </button>
+
+                    <div className="pt-6 border-t border-gray-900 space-y-4">
+                      <div className="flex items-center gap-2">
+                        <Briefcase className="w-3.5 h-3.5 text-luxury-gold" />
+                        <h3 className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">
+                          Profession, Business & Skills
+                        </h3>
+                      </div>
+                      <p className="text-[11px] text-gray-600 leading-relaxed -mt-2">
+                        Help the family know each other better and spot ways to collaborate. Visible to admins only — not shown in any member-facing directory.
+                      </p>
+
+                      <div className="flex flex-col gap-1.5">
+                        <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">
+                          Profession / Occupation
+                        </label>
+                        <input
+                          type="text"
+                          value={professionDraft}
+                          onChange={(e) => setProfessionDraft(e.target.value)}
+                          placeholder="e.g. Chartered Accountant"
+                          className="bg-jet-black border border-gray-800 rounded px-4 py-2.5 text-sm text-white focus:outline-none focus:border-luxury-gold transition-colors placeholder:text-gray-700"
+                        />
+                      </div>
+
+                      <div className="flex flex-col gap-1.5">
+                        <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">
+                          Business Name
+                        </label>
+                        <input
+                          type="text"
+                          value={businessNameDraft}
+                          onChange={(e) => setBusinessNameDraft(e.target.value)}
+                          placeholder="e.g. Aikins & Co."
+                          className="bg-jet-black border border-gray-800 rounded px-4 py-2.5 text-sm text-white focus:outline-none focus:border-luxury-gold transition-colors placeholder:text-gray-700"
+                        />
+                      </div>
+
+                      <div className="flex flex-col gap-1.5">
+                        <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">
+                          What Your Business Does
+                        </label>
+                        <textarea
+                          value={businessDescriptionDraft}
+                          onChange={(e) => setBusinessDescriptionDraft(e.target.value)}
+                          rows={3}
+                          maxLength={500}
+                          placeholder="Briefly describe what your business offers..."
+                          className="bg-jet-black border border-gray-800 rounded px-4 py-3 text-sm text-white focus:outline-none focus:border-luxury-gold transition-colors placeholder:text-gray-700 resize-none"
+                        />
+                      </div>
+
+                      <div className="flex flex-col gap-1.5">
+                        <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">
+                          Skills
+                        </label>
+                        <input
+                          type="text"
+                          value={skillsDraft}
+                          onChange={(e) => setSkillsDraft(e.target.value)}
+                          placeholder="Comma-separated, e.g. Accounting, Graphic Design, Event Planning"
+                          className="bg-jet-black border border-gray-800 rounded px-4 py-2.5 text-sm text-white focus:outline-none focus:border-luxury-gold transition-colors placeholder:text-gray-700"
+                        />
+                      </div>
+
+                      <div className="flex items-center gap-3">
+                        <button
+                          onClick={handleSaveProfessionalInfo}
+                          disabled={professionalInfoSaving}
+                          className="px-5 py-2.5 bg-gradient-to-r from-luxury-gold to-luxury-gold-dark text-black font-sans font-black tracking-widest text-[10px] uppercase rounded transition-all shadow-[0_2px_10px_rgba(212,175,55,0.2)] hover:shadow-[0_2px_15px_rgba(212,175,55,0.4)] disabled:opacity-50 flex items-center gap-2 cursor-pointer"
+                        >
+                          {professionalInfoSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                          Save
+                        </button>
+                        {professionalInfoSaved && (
+                          <span className="text-[10px] text-green-400 flex items-center gap-1 font-bold uppercase tracking-wider">
+                            <CheckCircle2 className="w-3 h-3" /> Saved
+                          </span>
+                        )}
+                      </div>
+                    </div>
 
                     <div className="pt-6 border-t border-gray-900">
                       <button

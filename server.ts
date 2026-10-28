@@ -525,6 +525,18 @@ async function initDb() {
     // how dues_amount = 0 already means "no welfare dues configured" above.
     await db.query(`ALTER TABLE member_accounts ADD COLUMN IF NOT EXISTS executive_dues_amount NUMERIC NOT NULL DEFAULT 0;`);
 
+    // Migration: Member Data Collection & Profile Update — profession,
+    // business name/description, and skills. Freeform text, self-edited by
+    // the member only (via the Member Portal's profile editor or the
+    // WhatsApp self-service bot), mirroring the existing `bio` field's
+    // pattern exactly. Admin-only visibility for now: shown read-only in the
+    // CMS's Member Accounts tab, never surfaced in any member-facing
+    // directory, and deliberately NOT included in the admin-edit endpoint.
+    await db.query(`ALTER TABLE member_accounts ADD COLUMN IF NOT EXISTS profession TEXT;`);
+    await db.query(`ALTER TABLE member_accounts ADD COLUMN IF NOT EXISTS business_name TEXT;`);
+    await db.query(`ALTER TABLE member_accounts ADD COLUMN IF NOT EXISTS business_description TEXT;`);
+    await db.query(`ALTER TABLE member_accounts ADD COLUMN IF NOT EXISTS skills TEXT;`);
+
     // RSVPs for free (no-payment) events. `event_id` references an id inside
     // the `events` cms_sections JSONB blob rather than a real foreign key —
     // events aren't a normal table, so there's nothing to FK against. One
@@ -1081,6 +1093,10 @@ function mapMemberRow(row: any) {
     chapter: row.chapter || undefined,
     role: row.role || undefined,
     phone: row.phone || undefined,
+    profession: row.profession || undefined,
+    businessName: row.business_name || undefined,
+    businessDescription: row.business_description || undefined,
+    skills: row.skills || undefined,
     duesAmount: Number(row.dues_amount),
     executiveDuesAmount: Number(row.executive_dues_amount || 0),
     currency: row.currency,
@@ -1195,21 +1211,30 @@ app.get("/api/member/me", requireMemberAuth, async (req: any, res) => {
   }
 });
 
-// Members may only edit their own bio/avatar/phone — email, password, dues
-// amount, and status all require admin action.
+// Members may only edit their own bio/avatar/phone/profession/business/
+// skills — email, password, dues amount, and status all require admin
+// action. The profession/business/skills fields follow the exact same
+// "member-edited only, admin views read-only" pattern as bio (see
+// mapMemberRow and the CMS's Member Accounts tab).
 app.patch("/api/member/me", requireMemberAuth, async (req: any, res) => {
   try {
-    const { bio, image, phone } = req.body || {};
+    const { bio, image, phone, profession, businessName, businessDescription, skills } = req.body || {};
     const db = getPool();
     const result = await db.query(
       `UPDATE member_accounts
-       SET bio = COALESCE($2, bio), image = COALESCE($3, image), phone = COALESCE($4, phone)
+       SET bio = COALESCE($2, bio), image = COALESCE($3, image), phone = COALESCE($4, phone),
+           profession = COALESCE($5, profession), business_name = COALESCE($6, business_name),
+           business_description = COALESCE($7, business_description), skills = COALESCE($8, skills)
        WHERE id = $1 RETURNING *`,
       [
         req.memberId,
         typeof bio === "string" ? bio : null,
         typeof image === "string" ? image : null,
         typeof phone === "string" ? phone : null,
+        typeof profession === "string" ? profession : null,
+        typeof businessName === "string" ? businessName : null,
+        typeof businessDescription === "string" ? businessDescription : null,
+        typeof skills === "string" ? skills : null,
       ]
     );
     if (result.rowCount === 0) return res.status(404).json({ success: false, error: "Member not found." });
@@ -1323,11 +1348,28 @@ function normalizePhoneToLocal(input: string): string | undefined {
   return undefined;
 }
 
-type WhatsAppSelfServiceStep = "menu" | "awaiting_phone" | "awaiting_email";
+type WhatsAppSelfServiceStep =
+  | "menu"
+  | "awaiting_phone"
+  | "awaiting_email"
+  | "awaiting_profession"
+  | "awaiting_business_name"
+  | "awaiting_business_description"
+  | "awaiting_skills";
 interface WhatsAppSelfServiceState {
   step: WhatsAppSelfServiceStep;
   memberId: string;
   expiresAt: number;
+  // Accumulated as the member walks through the "update my profile" sub-flow
+  // (profession → business name → business description → skills) — each
+  // step is skippable, so this only gets whatever they actually answered,
+  // and all four are saved together once the sub-flow finishes.
+  profileDraft?: {
+    profession?: string;
+    businessName?: string;
+    businessDescription?: string;
+    skills?: string;
+  };
 }
 // In-memory only — these conversations are short-lived (a minute or two of
 // back and forth), so there's no need for this to survive a restart. Keyed
@@ -1336,7 +1378,7 @@ const whatsappSelfServiceState = new Map<string, WhatsAppSelfServiceState>();
 const WHATSAPP_SELF_SERVICE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes idle
 
 function whatsappSelfServiceMenu(fullName: string): string {
-  return `👋 Hi ${fullName}! I'm the DE ELITES FAMILY account assistant.\n\nWhat would you like to do?\n\n1️⃣ Reset my password\n2️⃣ Update my phone number\n3️⃣ Update my email address\n4️⃣ Cancel\n\nJust reply with a number (1-4).`;
+  return `👋 Hi ${fullName}! I'm the DE ELITES FAMILY account assistant.\n\nWhat would you like to do?\n\n1️⃣ Reset my password\n2️⃣ Update my phone number\n3️⃣ Update my email address\n4️⃣ Update my profile (profession, business, skills)\n5️⃣ Cancel\n\nJust reply with a number (1-5).`;
 }
 
 // The main entry point — see the onIncomingDirectMessage registration below
@@ -1377,8 +1419,10 @@ async function handleWhatsAppDirectMessage(fromJid: string, text: string): Promi
         ? "2"
         : lower === "3" || lower.includes("email")
         ? "3"
-        : lower === "4"
+        : lower === "4" || lower.includes("profile") || lower.includes("profession") || lower.includes("business") || lower.includes("skills")
         ? "4"
+        : lower === "5" || lower.includes("cancel")
+        ? "5"
         : null;
 
     if (choice === "1") {
@@ -1401,10 +1445,14 @@ async function handleWhatsAppDirectMessage(fromJid: string, text: string): Promi
       return "📧 Sure — please send your new email address, or reply 'cancel' to stop.";
     }
     if (choice === "4") {
+      whatsappSelfServiceState.set(fromJid, { ...state, step: "awaiting_profession", profileDraft: {}, expiresAt: now + WHATSAPP_SELF_SERVICE_TIMEOUT_MS });
+      return "💼 Let's update your profile! I'll ask a few quick questions — reply 'skip' to leave any of them blank, or 'cancel' to stop.\n\nFirst: what's your profession or occupation?";
+    }
+    if (choice === "5") {
       whatsappSelfServiceState.delete(fromJid);
       return "👍 No changes made. Message me anytime if you need anything else.";
     }
-    return "Sorry, I didn't catch that 🤔 Reply with a number:\n\n1️⃣ Reset my password\n2️⃣ Update my phone number\n3️⃣ Update my email address\n4️⃣ Cancel";
+    return "Sorry, I didn't catch that 🤔 Reply with a number:\n\n1️⃣ Reset my password\n2️⃣ Update my phone number\n3️⃣ Update my email address\n4️⃣ Update my profile (profession, business, skills)\n5️⃣ Cancel";
   }
 
   if (state.step === "awaiting_phone") {
@@ -1431,6 +1479,48 @@ async function handleWhatsAppDirectMessage(fromJid: string, text: string): Promi
     whatsappSelfServiceState.delete(fromJid);
     console.log(`[WhatsApp Self-Service] Email updated for member ${state.memberId} via WhatsApp DM.`);
     return `✅ Your email has been updated to ${email}. This is the address used for your account notifications. Message me anytime for anything else!`;
+  }
+
+  // The four profile sub-flow steps all follow the same shape: "skip" moves
+  // on without recording an answer, anything else is saved into the
+  // in-progress draft, and the final step (skills) writes everything to the
+  // database in one UPDATE — mirroring how the Member Portal's profile
+  // editor saves profession/businessName/businessDescription/skills
+  // together via PATCH /api/member/me.
+  if (state.step === "awaiting_profession") {
+    const draft = { ...(state.profileDraft || {}) };
+    if (lower !== "skip") draft.profession = text.trim();
+    whatsappSelfServiceState.set(fromJid, { ...state, step: "awaiting_business_name", profileDraft: draft, expiresAt: now + WHATSAPP_SELF_SERVICE_TIMEOUT_MS });
+    return "Got it 👍 Next: do you run a business? If so, what's it called? (reply 'skip' if not)";
+  }
+
+  if (state.step === "awaiting_business_name") {
+    const draft = { ...(state.profileDraft || {}) };
+    if (lower !== "skip") draft.businessName = text.trim();
+    whatsappSelfServiceState.set(fromJid, { ...state, step: "awaiting_business_description", profileDraft: draft, expiresAt: now + WHATSAPP_SELF_SERVICE_TIMEOUT_MS });
+    return "And briefly, what does that business do? (reply 'skip' to leave blank)";
+  }
+
+  if (state.step === "awaiting_business_description") {
+    const draft = { ...(state.profileDraft || {}) };
+    if (lower !== "skip") draft.businessDescription = text.trim();
+    whatsappSelfServiceState.set(fromJid, { ...state, step: "awaiting_skills", profileDraft: draft, expiresAt: now + WHATSAPP_SELF_SERVICE_TIMEOUT_MS });
+    return "Last one: any skills you'd like the family to know about? (comma-separate a few, e.g. \"Accounting, Graphic Design\" — or reply 'skip')";
+  }
+
+  if (state.step === "awaiting_skills") {
+    const draft = { ...(state.profileDraft || {}) };
+    if (lower !== "skip") draft.skills = text.trim();
+    await db.query(
+      `UPDATE member_accounts
+       SET profession = COALESCE($2, profession), business_name = COALESCE($3, business_name),
+           business_description = COALESCE($4, business_description), skills = COALESCE($5, skills)
+       WHERE id = $1`,
+      [state.memberId, draft.profession ?? null, draft.businessName ?? null, draft.businessDescription ?? null, draft.skills ?? null]
+    );
+    whatsappSelfServiceState.delete(fromJid);
+    console.log(`[WhatsApp Self-Service] Profile (profession/business/skills) updated for member ${state.memberId} via WhatsApp DM.`);
+    return "✅ Thanks! Your profile has been updated. This helps the family know each other better and spot ways to collaborate — only admins can see it for now. Message me anytime for anything else!";
   }
 
   // Shouldn't be reachable, but fall back safely rather than leaving the

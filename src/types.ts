@@ -154,6 +154,18 @@ export interface MemberAccount {
   chapter?: string;
   role?: string;
   phone?: string;
+  // Profession, business, and skills — collected via the Member Portal's
+  // profile editor or the WhatsApp self-service bot, to help the family
+  // know each other better and spot collaboration opportunities. Admin-only
+  // visibility for now (shown read-only in the CMS's Member Accounts tab) —
+  // not surfaced in any member-facing directory. All optional/freeform.
+  profession?: string;
+  businessName?: string;
+  businessDescription?: string;
+  // Freeform, comma-separated (e.g. "Accounting, Graphic Design, Event
+  // Planning") rather than a structured tag list — same "freeform over
+  // fixed taxonomy" choice as GalleryItem.category elsewhere in this file.
+  skills?: string;
   // Configurable per member (per admin decision) — the recurring welfare
   // dues amount this member is expected to pay each period, in the
   // platform's configured currency (see DUES_CURRENCY env var).
@@ -180,6 +192,10 @@ export interface MemberProfileUpdate {
   bio?: string;
   image?: string;
   phone?: string;
+  profession?: string;
+  businessName?: string;
+  businessDescription?: string;
+  skills?: string;
 }
 
 export type PaymentStatus = 'pending' | 'success' | 'failed';
