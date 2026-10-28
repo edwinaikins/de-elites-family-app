@@ -236,6 +236,14 @@ is restarted, it switches to sending real emails automatically. Force either
 behavior with `MAIL_MOCK=true` / `MAIL_MOCK=false` if needed — see
 `.env.example`.
 
+**Nudging members to add a bio:** the welcome flow doesn't ask for one
+up front, but the first time a member with an empty bio opens their
+dashboard (after setting their own password), they see a small dismissible
+banner pointing them at the Profile tab — "Add my bio" jumps straight
+there, "Maybe later" just hides it for that session. It's not required —
+nothing in the portal is gated on having a bio — and it stops appearing on
+its own the moment they save one.
+
 ### Membership application notifications (PDF -> email + WhatsApp group)
 
 Whenever someone submits the "Join the Movement" application form, the app
@@ -533,6 +541,60 @@ number matches an existing active member's phone-on-file. Watch
 `journalctl --user -u de-elites-family -f` while you do — every self-service
 action it takes logs a line (without ever logging the password itself), so
 you can confirm it fired without having to take the member's word for it.
+
+### WhatsApp self-registration (brand-new members create their own login)
+
+The menu above only shows up once an account already exists with that
+member's phone number on file. If **no** account's phone matches at all —
+i.e. this looks like a genuinely new member who's never had a portal login
+— the bot offers to create one right there in the chat instead of hitting a
+dead end:
+
+```
+👋 Hi! I couldn't find a DE ELITES FAMILY account linked to this
+WhatsApp number yet.
+
+Want to set one up right now? It only takes a minute. Reply JOIN to
+get started, or ignore this message if that wasn't you.
+```
+
+Replying **JOIN** asks for their full name, then their email address
+(used for the welcome email and later for things like Paystack receipts),
+and that's it — the account is created immediately with:
+
+- **Username**, auto-generated from their name (e.g. "Ama Serwaa Mensah" →
+  `ama.serwaa`; a number gets appended if that's already taken by someone
+  else, e.g. `ama.serwaa-2`) — no admin has to invent or type one.
+- **Temporary password**, auto-generated the same way a password reset
+  generates one.
+- **Phone**, taken directly from the WhatsApp number they messaged from
+  (so the self-service menu above immediately recognizes them on any
+  future message).
+
+The username and temporary password are sent straight back in that same
+chat, and also emailed to them as a backup (same `sendWelcomeEmail` flow
+as admin-created accounts, including the same mock-mode behavior if SMTP
+isn't configured yet — see "Welcome emails" above). They're flagged
+`must_change_password`, so the portal walks them through setting their own
+password the moment they first log in — then a gentle (skippable) banner
+on their dashboard points them at the Profile tab to add a short bio.
+
+**This means you don't need to know anyone's username to roll out logins**
+— just get the word out (e.g. post in the WhatsApp group) that members
+should message the bot directly and reply "JOIN" to set up their own
+account. No bulk list, no admin typing usernames one by one.
+
+**One safety check:** if the email they give is already attached to an
+existing account (e.g. they already have a portal login, just under a
+phone number that's wrong/outdated/unset), signup is refused with a message
+telling them to contact an admin — this prevents accidentally creating a
+duplicate account for someone who already has one. An admin fixing that
+member's phone number in the CMS (Member Accounts tab) is what lets the
+self-service menu recognize them correctly afterward.
+
+**Testing it:** message the bot from a phone number that has never been
+used as any member's phone-on-file, with an email address that isn't
+already in the system, and reply JOIN when prompted.
 
 ### Member Data Collection & Profile Update (profession, business, skills)
 

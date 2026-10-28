@@ -70,6 +70,15 @@ export default function MemberPortalModal() {
   const [bioSaving, setBioSaving] = useState(false);
   const [bioSaved, setBioSaved] = useState(false);
 
+  // A gentle, dismissible nudge shown across the dashboard (not just the
+  // Profile tab) for a member who hasn't written a bio yet — never blocks
+  // anything, just points them at the Profile tab. Dismissing just hides it
+  // for the rest of this session; it's driven entirely off whether `bio` is
+  // empty rather than its own saved flag, so it naturally reappears next
+  // time they log in if they still haven't filled it in, and disappears for
+  // good the moment they do.
+  const [bioNudgeDismissed, setBioNudgeDismissed] = useState(false);
+
   // Profession/business/skills editor state — "Member Data Collection &
   // Profile Update". Freeform fields, saved together via one Save button,
   // mirroring the bio editor above exactly. Admin-only visibility (shown
@@ -637,6 +646,33 @@ export default function MemberPortalModal() {
                   ))}
                 </div>
               </div>
+
+              {!member.bio && !bioNudgeDismissed && (
+                <div className="px-6 sm:px-8 pt-5">
+                  <div className="flex items-start gap-3 bg-luxury-gold/5 border border-luxury-gold/20 rounded p-3.5">
+                    <User className="w-4 h-4 text-luxury-gold shrink-0 mt-0.5" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs text-gray-300 leading-relaxed">
+                        You haven't added a bio yet — a couple of lines helps the rest of the family get to know you.
+                      </p>
+                      <div className="flex items-center gap-4 mt-2">
+                        <button
+                          onClick={() => setActiveTab('profile')}
+                          className="text-[10px] font-black uppercase tracking-widest text-luxury-gold hover:opacity-80 transition-opacity cursor-pointer"
+                        >
+                          Add my bio
+                        </button>
+                        <button
+                          onClick={() => setBioNudgeDismissed(true)}
+                          className="text-[10px] font-black uppercase tracking-widest text-gray-600 hover:text-gray-400 transition-colors cursor-pointer"
+                        >
+                          Maybe later
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               <div className="p-6 sm:p-8">
                 {activeTab === 'profile' && (

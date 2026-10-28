@@ -1355,7 +1355,14 @@ type WhatsAppSelfServiceStep =
   | "awaiting_profession"
   | "awaiting_business_name"
   | "awaiting_business_description"
-  | "awaiting_skills";
+  | "awaiting_skills"
+  // Self-registration sub-flow — offered instead of the menu above when no
+  // existing member account matches the sender's WhatsApp number at all
+  // (see the entry point below). memberId is "" (a sentinel, not a real
+  // account yet) for the duration of this sub-flow.
+  | "signup_offer"
+  | "signup_awaiting_name"
+  | "signup_awaiting_email";
 interface WhatsAppSelfServiceState {
   step: WhatsAppSelfServiceStep;
   memberId: string;
@@ -1370,6 +1377,42 @@ interface WhatsAppSelfServiceState {
     businessDescription?: string;
     skills?: string;
   };
+  // Holds the full name through the self-registration sub-flow's two steps
+  // (name, then email) until the account is actually created.
+  signupFullName?: string;
+}
+
+// Turns a full name into a login username the same shape an admin would
+// type by hand (lowercase, dot-separated, letters/numbers only) — e.g.
+// "Ama Serwaa Mensah" -> "ama.serwaa", using just the first two words so
+// usernames stay short and memorable. Appends -2, -3, etc. if that's
+// already taken, so two "Ama Mensah"s both end up with a working, unique
+// username without anyone having to pick one by hand. Used by the WhatsApp
+// self-registration sub-flow below.
+async function generateUniqueUsername(fullName: string): Promise<string> {
+  const words = fullName
+    .trim()
+    .toLowerCase()
+    .split(/\s+/)
+    .map((w) => w.replace(/[^a-z0-9]/g, ""))
+    .filter(Boolean)
+    .slice(0, 2);
+  let base = words.join(".");
+  if (base.length < 3) base = `member${Date.now().toString().slice(-5)}`;
+  base = base.slice(0, 28); // leave room for a "-<n>" suffix within the 32-char username limit
+  const db = getPool();
+  let candidate = base;
+  let suffix = 1;
+  // Small, bounded loop — the member list is small enough that collisions
+  // (let alone repeated ones) are rare; the cap just guarantees this can
+  // never spin forever on a pathological input.
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const existing = await db.query("SELECT 1 FROM member_accounts WHERE username = $1", [candidate]);
+    if ((existing.rowCount ?? 0) === 0) return candidate;
+    suffix += 1;
+    candidate = `${base}-${suffix}`;
+  }
+  return `${base}-${Date.now()}`;
 }
 // In-memory only — these conversations are short-lived (a minute or two of
 // back and forth), so there's no need for this to survive a restart. Keyed
@@ -1403,7 +1446,15 @@ async function handleWhatsAppDirectMessage(fromJid: string, text: string): Promi
   if (!state) {
     const member = await findMemberByWhatsAppJid(fromJid);
     if (!member) {
-      return "👋 Hi! I couldn't find a DE ELITES FAMILY member account linked to this WhatsApp number.\n\nIf you're a member, make sure your phone number is saved correctly in the Member Portal (Profile tab), then message me again. Need help? Contact an admin.";
+      // No account's phone-on-file matches this WhatsApp number — rather
+      // than a dead end, offer to create one right here (see the
+      // "signup_*" steps below). A member whose account already exists but
+      // under a different/missing phone number would also land here; the
+      // email-uniqueness check in signup_awaiting_email is what catches
+      // that case and sends them to an admin instead of creating a
+      // duplicate account.
+      whatsappSelfServiceState.set(fromJid, { step: "signup_offer", memberId: "", expiresAt: now + WHATSAPP_SELF_SERVICE_TIMEOUT_MS });
+      return "👋 Hi! I couldn't find a DE ELITES FAMILY account linked to this WhatsApp number yet.\n\nWant to set one up right now? It only takes a minute. Reply *JOIN* to get started, or ignore this message if that wasn't you.";
     }
     whatsappSelfServiceState.set(fromJid, { step: "menu", memberId: member.id, expiresAt: now + WHATSAPP_SELF_SERVICE_TIMEOUT_MS });
     return whatsappSelfServiceMenu(member.fullName);
@@ -1521,6 +1572,67 @@ async function handleWhatsAppDirectMessage(fromJid: string, text: string): Promi
     whatsappSelfServiceState.delete(fromJid);
     console.log(`[WhatsApp Self-Service] Profile (profession/business/skills) updated for member ${state.memberId} via WhatsApp DM.`);
     return "✅ Thanks! Your profile has been updated. This helps the family know each other better and spot ways to collaborate — only admins can see it for now. Message me anytime for anything else!";
+  }
+
+  // Self-registration sub-flow — offered above when no existing account's
+  // phone-on-file matches this WhatsApp number. Three short steps (confirm
+  // → full name → email) and the account is live, with its own generated
+  // username and temporary password sent right back in this same chat —
+  // no admin involvement needed for the common case of a genuinely new
+  // member reaching out for the first time.
+  if (state.step === "signup_offer") {
+    if (lower === "join" || lower.includes("join") || lower === "yes" || lower.includes("sign") || lower.includes("start")) {
+      whatsappSelfServiceState.set(fromJid, { step: "signup_awaiting_name", memberId: "", expiresAt: now + WHATSAPP_SELF_SERVICE_TIMEOUT_MS });
+      return "Great! Let's get you set up. What's your full name?";
+    }
+    whatsappSelfServiceState.delete(fromJid);
+    return "No problem — message me anytime if you change your mind.";
+  }
+
+  if (state.step === "signup_awaiting_name") {
+    const fullName = text.trim().replace(/\s+/g, " ");
+    if (fullName.length < 2 || fullName.length > 100) {
+      return "That doesn't look like a full name — please send your full name, or reply 'cancel' to stop.";
+    }
+    whatsappSelfServiceState.set(fromJid, {
+      step: "signup_awaiting_email",
+      memberId: "",
+      signupFullName: fullName,
+      expiresAt: now + WHATSAPP_SELF_SERVICE_TIMEOUT_MS,
+    });
+    return `Thanks, ${fullName.split(" ")[0]}! Now, what's your email address? (used for payment receipts and account recovery)`;
+  }
+
+  if (state.step === "signup_awaiting_email") {
+    const email = text.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return "That doesn't look like a valid email address. Please send a valid one, or reply 'cancel' to stop.";
+    }
+    const taken = await db.query("SELECT 1 FROM member_accounts WHERE email = $1", [email]);
+    if ((taken.rowCount ?? 0) > 0) {
+      whatsappSelfServiceState.delete(fromJid);
+      return "That email is already linked to an existing account. If that's you, an admin just needs to update the phone number on file for you — contact an admin, then message me again.";
+    }
+    const fullName = state.signupFullName || text.trim();
+    const phone = normalizePhoneToLocal(fromJid.split("@")[0]) || fromJid.split("@")[0];
+    const username = await generateUniqueUsername(fullName);
+    const tempPassword = generateTempPassword();
+    const passwordHash = await bcrypt.hash(tempPassword, 10);
+    const id = `member-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    await db.query(
+      `INSERT INTO member_accounts (id, full_name, username, email, password_hash, bio, phone, dues_amount, executive_dues_amount, currency, status, must_change_password)
+       VALUES ($1,$2,$3,$4,$5,'',$6,0,0,$7,'active',true)`,
+      [id, fullName, username, email, passwordHash, phone, getDuesCurrency()]
+    );
+    whatsappSelfServiceState.delete(fromJid);
+    console.log(`[WhatsApp Self-Service] New member account self-registered via WhatsApp DM: ${id} (${username}).`);
+    // Best-effort, same as the admin-created-account flow — a failed/mocked
+    // email should never block signup since the member already has
+    // everything they need right here in this chat either way.
+    sendWelcomeEmail(fullName, email, username, tempPassword).catch((err) => {
+      console.error("[WhatsApp Self-Service] Welcome email failed for self-registered member:", err);
+    });
+    return `✅ You're all set, ${fullName.split(" ")[0]}!\n\nUsername: *${username}*\nTemporary Password: *${tempPassword}*\n\nLog in at ${getSiteUrl()} (tap "Member Login") — you'll be asked to set your own password right away. We also emailed these details to ${email} as a backup.\n\nOnce you're in, swing by your Profile tab and add a short bio — it helps the rest of the family get to know you! 🙌`;
   }
 
   // Shouldn't be reachable, but fall back safely rather than leaving the
