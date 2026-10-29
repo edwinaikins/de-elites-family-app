@@ -746,6 +746,13 @@ the database), uploaded gallery media is written to disk on the VM and
 served from `/uploads/gallery/...` — this keeps the page that loads on
 every visit fast even when someone uploads a 100MB event video.
 
+**Upcoming Events categories work the same way.** The Category field on
+each event (CMS → Upcoming Events) used to be a fixed dropdown (Meeting,
+Summit, Concert, Community, Launch) — it's now freeform text with the same
+"suggestions from what's already in use, type anything new" datalist
+behavior as Gallery's Category Tag and Expenditure's Category above. No
+code change needed to add or retire a category going forward.
+
 **Recommended for production:** set `UPLOADS_DIR` in `.env` on the VM to a
 folder *outside* your deployed app directory, e.g.:
 

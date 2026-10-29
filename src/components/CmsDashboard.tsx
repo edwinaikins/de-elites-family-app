@@ -2005,7 +2005,18 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
               {/* EVENTS MODULE VIEW */}
               {activeTab === 'events' && (
                 <div className="grid grid-cols-3 gap-6 h-full items-start">
-                  
+
+                  {/* Powers the Category field's suggestions below — every
+                      category currently in use across upcoming events, so
+                      admins see what already exists before typing a
+                      brand-new one (same pattern as Gallery's Category Tag
+                      and Expenditure's Category above). */}
+                  <datalist id="event-category-options">
+                    {Array.from(new Set(localEvents.map((e) => e.category).filter(Boolean))).map((cat) => (
+                      <option key={cat} value={cat} />
+                    ))}
+                  </datalist>
+
                   {/* Events list */}
                   <div className="col-span-1 bg-charcoal-card rounded border border-gray-900 p-4 space-y-2 max-h-[600px] overflow-y-auto">
                     <span className="font-sans text-[9px] font-black uppercase tracking-widest text-gray-500 block mb-2">
@@ -2120,18 +2131,20 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                                 />
                               </div>
                               <div className="flex flex-col gap-1.5">
-                                <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">Category</label>
-                                <select
+                                <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">
+                                  Category
+                                  <span className="ml-1.5 text-gray-600 font-normal normal-case">
+                                    — type any category; new ones just work
+                                  </span>
+                                </label>
+                                <input
+                                  type="text"
+                                  list="event-category-options"
                                   value={event.category}
-                                  onChange={(e) => handleEventChange(event.id, 'category', e.target.value as any)}
-                                  className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold cursor-pointer"
-                                >
-                                  <option value="Meeting">Meeting</option>
-                                  <option value="Summit">Summit</option>
-                                  <option value="Concert">Concert</option>
-                                  <option value="Community">Community</option>
-                                  <option value="Launch">Launch</option>
-                                </select>
+                                  onChange={(e) => handleEventChange(event.id, 'category', e.target.value)}
+                                  placeholder="e.g. Meeting, Summit, Concert..."
+                                  className="bg-jet-black border border-gray-800 rounded px-3 py-2.5 text-xs text-white focus:outline-none focus:border-luxury-gold"
+                                />
                               </div>
                             </div>
 

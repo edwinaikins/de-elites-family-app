@@ -86,7 +86,11 @@ export interface EliteEvent {
   location: string;
   description: string;
   image: string;
-  category: 'Meeting' | 'Summit' | 'Concert' | 'Community' | 'Launch';
+  // Freeform text, same "freeform over fixed taxonomy" choice as
+  // GalleryItem.category above — type any category when creating an
+  // event, existing ones are suggested via a datalist in the CMS, nothing
+  // here is validated against a fixed list.
+  category: string;
   // Legacy custom CTA fields — no longer editable in the CMS and no longer
   // rendered on free events (replaced by the RSVP Yes/No/Maybe flow below).
   // Left optional/unused rather than removed outright so any pre-existing
