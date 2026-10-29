@@ -1512,6 +1512,35 @@ function whatsappSelfServiceMenu(fullName: string): string {
 // must never crash the WhatsApp connection or, worse, the server. Accepts
 // loose matches ("reset", "password", "phone", "email") alongside the exact
 // menu numbers, so it's forgiving of however someone naturally replies.
+// Which WhatsApp number gets pinged every time a new signup request comes
+// in (either path — see notifyAdminOfNewSignupRequest below), so an admin
+// doesn't have to keep checking the CMS to notice one. Defaults to the
+// number given when this was set up; override with ADMIN_NOTIFY_PHONE in
+// .env to point it elsewhere (or set it to an empty string to turn this
+// notification off entirely without touching anything else).
+function getAdminNotifyPhone(): string {
+  return process.env.ADMIN_NOTIFY_PHONE ?? "0546867491";
+}
+
+// Best-effort — never throws, never awaited by its callers (see
+// insertSignupRequest below). A failure here must never block or fail the
+// signup request itself; worst case the admin just doesn't get pinged and
+// has to notice the CMS's Signup Requests badge instead.
+async function notifyAdminOfNewSignupRequest(request: { fullName: string; username: string }): Promise<void> {
+  try {
+    const phone = getAdminNotifyPhone();
+    if (!phone) return; // explicitly turned off
+    const jid = phoneToWhatsAppJid(phone);
+    if (!jid) return;
+    await sendWhatsAppText(
+      jid,
+      `🔔 New member signup request waiting for your approval:\n\n*${request.fullName}* (username: ${request.username})\n\nReview it in the CMS → Signup Requests tab.`
+    );
+  } catch (err) {
+    console.error("[Signup Requests] Failed to notify admin of new signup request:", err);
+  }
+}
+
 // Shared by every entry point that ends in a pending member_signup_requests
 // row — the WhatsApp JOIN chat flow (finalizeSignupRequest below) and the
 // plain web-form version (POST /api/signup-requests further down this
@@ -1525,7 +1554,11 @@ async function insertSignupRequest(fullName: string, username: string, email: st
      VALUES ($1,$2,$3,$4,$5,'pending') RETURNING *`,
     [id, fullName, username, email, phone]
   );
-  return mapSignupRequestRow(result.rows[0]);
+  const created = mapSignupRequestRow(result.rows[0]);
+  // Fire-and-forget — neither caller (the WhatsApp chat reply, or the HTTP
+  // response for the web form) should wait on this extra send.
+  notifyAdminOfNewSignupRequest(created);
+  return created;
 }
 
 // Shared by both ways the self-registration sub-flow can reach a phone

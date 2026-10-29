@@ -617,6 +617,16 @@ used as any member's phone-on-file, with an email address that isn't
 already in the system, and reply JOIN when prompted. Then check the
 Signup Requests tab and approve it.
 
+### Admin notification for new signup requests (WhatsApp)
+
+Every time a new signup request comes in — from either the WhatsApp JOIN
+chat or the "Request Access" web form below — a WhatsApp DM goes out to a
+fixed admin number saying so, naming the requester and pointing at the CMS.
+This is on by default (`0546867491`) — set `ADMIN_NOTIFY_PHONE` in `.env`
+to redirect it to a different number, or to an empty string to turn it off
+entirely (requests still land in the CMS Signup Requests tab either way;
+this only controls the extra ping). See `.env.example` for the full note.
+
 ### Request Access web form (no WhatsApp chat required)
 
 The exact same signup-request queue above, reached a second way — a plain
