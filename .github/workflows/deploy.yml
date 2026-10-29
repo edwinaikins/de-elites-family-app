@@ -39,13 +39,19 @@ jobs:
       # Ship everything except node_modules/.git/.env* — the VM keeps its own
       # .env (with DATABASE_URL) untouched across deploys, and installs its
       # own production node_modules below rather than us shipping them over
-      # the wire.
+      # the wire. Also excluded: uploads/ and whatsapp-session/ — these only
+      # ever exist on the VM (gallery photos/videos saved at runtime, and the
+      # linked WhatsApp session), never in this repo. Without these excludes,
+      # --delete wipes both on every single deploy, since anything missing
+      # from the source checkout gets deleted from the destination.
       - name: Sync source + built assets to the VM
         run: |
           rsync -avz --delete \
             --exclude 'node_modules' \
             --exclude '.git' \
             --exclude '.env*' \
+            --exclude 'uploads' \
+            --exclude 'whatsapp-session' \
             ./ "${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}:${{ secrets.VM_APP_DIR }}/"
 
       - name: Install production deps & restart service on the VM

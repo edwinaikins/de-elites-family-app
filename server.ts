@@ -65,6 +65,15 @@ const GALLERY_UPLOADS_DIR = path.join(UPLOADS_DIR, "gallery");
 fs.mkdirSync(GALLERY_UPLOADS_DIR, { recursive: true });
 
 app.use("/uploads", express.static(UPLOADS_DIR));
+// If a requested upload isn't found, express.static calls next() by default
+// (rather than ending the response), which would otherwise fall all the way
+// through to the SPA catch-all route below and silently return index.html
+// with a 200 status for a missing photo/video. That's exactly what makes a
+// lost upload look like a generic "broken image" in the browser instead of
+// a clear 404 — stop it here instead of letting it fall through.
+app.use("/uploads", (_req, res) => {
+  res.status(404).json({ success: false, error: "Upload not found." });
+});
 
 const galleryUploadStorage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, GALLERY_UPLOADS_DIR),
