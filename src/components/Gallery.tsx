@@ -1,14 +1,33 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Filter, Calendar, Award, Crown, MapPin, ExternalLink, PlayCircle, ChevronLeft, ChevronRight, Images } from 'lucide-react';
 import { useCms } from '../context/CmsContext';
 import { GalleryItem } from '../types';
+import { consumeDeepLinkId } from '../lib/share';
+import ShareButton from './ShareButton';
 
 export default function Gallery() {
   const { gallery } = useCms();
   const [activeFilter, setActiveFilter] = useState<string>('All');
   const [selectedItem, setSelectedItem] = useState<GalleryItem | null>(null);
   const [activeMediaIndex, setActiveMediaIndex] = useState(0);
+
+  // A shared gallery link (see ShareButton below) looks like
+  // ".../gallery/<id>" — unlike Events, this section already has a
+  // per-item detail view (the spotlight modal), so landing on one of these
+  // just opens that item straight into it, same as if it had been clicked.
+  useEffect(() => {
+    if (!gallery || gallery.length === 0) return;
+    const id = consumeDeepLinkId('/gallery');
+    if (!id) return;
+    const match = gallery.find((item) => item.id === id);
+    if (!match) return;
+    setSelectedItem(match);
+    setActiveMediaIndex(0);
+    requestAnimationFrame(() => {
+      document.getElementById('legacy-gallery')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }, [gallery]);
 
   // Categories are admin-defined, not a fixed list — whatever category tags
   // are actually in use across the gallery become filter buttons here, so a
@@ -118,8 +137,12 @@ export default function Gallery() {
                     {item.category}
                   </span>
 
+                  <div className="absolute top-4 right-4">
+                    <ShareButton title={item.title} text={item.description} path={`/gallery/${item.id}`} />
+                  </div>
+
                   {item.media && item.media.length > 0 && (
-                    <span className="absolute top-4 right-4 flex items-center gap-1 font-sans text-[9px] font-black uppercase tracking-[0.15em] text-white bg-black/70 border border-white/10 px-2 py-1 rounded backdrop-blur-sm">
+                    <span className="absolute top-16 right-4 flex items-center gap-1 font-sans text-[9px] font-black uppercase tracking-[0.15em] text-white bg-black/70 border border-white/10 px-2 py-1 rounded backdrop-blur-sm">
                       <Images className="w-3 h-3" />
                       +{item.media.length}
                     </span>
@@ -287,7 +310,13 @@ export default function Gallery() {
               </div>
 
               {/* Modal Footer */}
-              <div className="bg-jet-black/80 p-4 sm:p-6 border-t border-gray-900 flex justify-end gap-3 sticky bottom-0">
+              <div className="bg-jet-black/80 p-4 sm:p-6 border-t border-gray-900 flex justify-end items-center gap-3 sticky bottom-0">
+                <ShareButton
+                  title={selectedItem.title}
+                  text={selectedItem.description}
+                  path={`/gallery/${selectedItem.id}`}
+                  variant="full"
+                />
                 <button
                   onClick={() => setSelectedItem(null)}
                   className="px-6 py-2.5 bg-luxury-gold hover:bg-luxury-gold-dark text-black font-sans font-black tracking-widest text-xs uppercase rounded transition-colors cursor-pointer"

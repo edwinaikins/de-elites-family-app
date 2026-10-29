@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Crown, Loader2 } from 'lucide-react';
 import Navbar from './components/Navbar';
 import Hero from './components/Hero';
@@ -25,6 +25,19 @@ function AppContent() {
   const [cmsOpen, setCmsOpen] = useState(false);
   const [joinOpen, setJoinOpen] = useState(false);
   const [welfareOpen, setWelfareOpen] = useState(false);
+
+  // A direct link to the Welfare page — /welfare — opens the site and pops
+  // it straight open, same pattern as /request-access in
+  // MemberAuthContext. Checked once on load (before the cmsLoading gate
+  // below, so this hook always runs regardless of loading state — hooks
+  // can't be called conditionally) and the URL is cleaned up right after
+  // so a refresh doesn't re-trigger it.
+  useEffect(() => {
+    if (window.location.pathname.replace(/\/+$/, '') === '/welfare') {
+      window.history.replaceState({}, '', '/');
+      setWelfareOpen(true);
+    }
+  }, []);
 
   // CmsContext's state starts out filled with hardcoded placeholder content
   // (src/data.ts — sample pillars, a fake "Marcus the Sovereign" leader,

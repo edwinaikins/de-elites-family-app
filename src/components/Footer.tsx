@@ -1,6 +1,7 @@
 import React from 'react';
 import { Instagram, Flame, ArrowUp, ShieldCheck } from 'lucide-react';
 import { useCms } from '../context/CmsContext';
+import ShareButton from './ShareButton';
 
 interface FooterProps {
   onOpenAdmin: () => void;
@@ -127,6 +128,15 @@ export default function Footer({ onOpenAdmin }: FooterProps) {
                   {social.icon}
                 </a>
               ))}
+            </div>
+
+            <div className="mt-5">
+              <ShareButton
+                title="DE ELITES FAMILY"
+                text="One Family. One Mission. One Legacy. Check out DE ELITES FAMILY:"
+                path="/"
+                variant="full"
+              />
             </div>
           </div>
 

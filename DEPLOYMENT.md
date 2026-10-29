@@ -645,6 +645,44 @@ group if you'd rather not have people chat with the bot at all. (Visiting
 it while already logged in just opens the portal normally — the shortcut
 only applies to the logged-out login screen.)
 
+### Direct link to the Welfare page
+
+`https://de-elitesfamily.org/welfare` opens the site straight into the
+Welfare & Benefits page — same one-shot-link pattern as `/request-access`
+above (and the share links below): the URL is just a signal read once on
+load, then reset to `/`, since this app has no client router.
+
+### Sharing events, gallery milestones, and the site itself
+
+A **Share** button now shows up in three places:
+
+- On every **Upcoming Event** card (top-right of its banner image).
+- On every **Legacy Gallery** item (top-right of its thumbnail, and again
+  inside the full-screen spotlight when you open one).
+- In the **Footer**, under the social icons — shares the whole site, not
+  tied to any one event or gallery item.
+
+On a phone (and some desktop browsers), tapping Share opens that device's
+normal native share sheet — WhatsApp, Messages, Instagram, Mail, whatever
+is installed. Where that isn't available (most desktop browsers), a small
+menu opens instead with WhatsApp, Facebook, X (Twitter), and Copy Link.
+
+**Shared links open straight to that specific thing.** An event's share
+link (`.../events/<id>`) scrolls to and briefly highlights that exact event
+card. A gallery item's share link (`.../gallery/<id>`) opens straight into
+that item's spotlight. Both are one-shot links, same mechanism as
+`/welfare` and `/request-access` — no server-side routing needed, since the
+existing catch-all that serves the app for any path already covers these.
+
+**One honest limitation:** because this is a single-page app with one
+static HTML file, a link preview card on WhatsApp/Facebook/X (the little
+thumbnail + title that shows up before someone even opens the link) will
+show the site's generic preview, not that specific event's photo and
+title — generating a true per-item preview would need the server to render
+different `<meta>` tags per link for link-preview crawlers specifically,
+which isn't built. The link itself still opens exactly the right thing
+once tapped; only the preview card is generic.
+
 ### Forgot password (member login page) + admin "Resend Credentials"
 
 Two related fixes for "the member never got their login details" or "they

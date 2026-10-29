@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
 import {
   Calendar, MapPin, Clock, Crown, Tag, CreditCard, CheckCircle2, AlertCircle, Loader2,
@@ -9,6 +9,8 @@ import { useEventPayments } from '../hooks/useEventPayments';
 import { useEventRsvp } from '../hooks/useEventRsvp';
 import { usePaymentsConfig } from '../hooks/usePaymentsConfig';
 import { EliteEvent, EventRsvpResponse } from '../types';
+import { consumeDeepLinkId } from '../lib/share';
+import ShareButton from './ShareButton';
 
 const RSVP_LABEL: Record<EventRsvpResponse, string> = { yes: 'Yes, Attending', no: 'Not Attending', maybe: 'Maybe' };
 
@@ -20,6 +22,28 @@ export default function Events() {
   const [galleryEvent, setGalleryEvent] = useState<EliteEvent | null>(null);
   const [activeMediaIndex, setActiveMediaIndex] = useState(0);
   const [rsvpPopupEvent, setRsvpPopupEvent] = useState<EliteEvent | null>(null);
+
+  // A shared event link (see ShareButton below) looks like
+  // ".../events/<id>" — there's no per-event detail modal to open (the
+  // card itself on this grid is the full content), so landing on one of
+  // these just scrolls that card into view and gives it a brief highlight
+  // so it's obvious which one was linked.
+  const [highlightedEventId, setHighlightedEventId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!events || events.length === 0) return;
+    const id = consumeDeepLinkId('/events');
+    if (!id) return;
+    const match = events.find((ev) => ev.id === id);
+    if (!match) return;
+    setHighlightedEventId(id);
+    // Give the card a render tick to exist in the DOM before scrolling.
+    requestAnimationFrame(() => {
+      document.getElementById(`event-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+    const timeout = setTimeout(() => setHighlightedEventId(null), 4000);
+    return () => clearTimeout(timeout);
+  }, [events]);
 
   // Stagger animation container
   const containerVariants = {
@@ -107,11 +131,16 @@ export default function Events() {
             {events.map((event) => (
               <motion.div
                 key={event.id}
+                id={`event-${event.id}`}
                 variants={cardVariants}
-                className="group bg-charcoal-card border border-gray-900 rounded-xl overflow-hidden hover:border-luxury-gold/30 transition-all duration-300 flex flex-col justify-between shadow-[0_10px_30px_rgba(0,0,0,0.6)] hover:shadow-[0_15px_40px_rgba(212,175,55,0.08)]"
+                className={`group bg-charcoal-card border rounded-xl overflow-hidden transition-all duration-300 flex flex-col justify-between shadow-[0_10px_30px_rgba(0,0,0,0.6)] hover:shadow-[0_15px_40px_rgba(212,175,55,0.08)] ${
+                  highlightedEventId === event.id
+                    ? 'border-luxury-gold shadow-[0_0_0_3px_rgba(212,175,55,0.25)]'
+                    : 'border-gray-900 hover:border-luxury-gold/30'
+                }`}
               >
                 <div>
-                  {/* Event Banner Image with Category Badge */}
+                  {/* Event Banner Image with Category Badge + Share */}
                   <div className="h-52 relative overflow-hidden bg-black/60">
                     <img
                       src={event.image || 'https://images.unsplash.com/photo-1511578314322-379afb476865?auto=format&fit=crop&q=80&w=800&h=500'}
@@ -120,13 +149,21 @@ export default function Events() {
                       className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500 opacity-80 group-hover:opacity-95"
                     />
                     <div className="absolute inset-0 bg-gradient-to-t from-[#0d0d0d] via-transparent to-transparent" />
-                    
+
                     {/* Category Badge */}
                     <div className="absolute top-4 left-4">
                       <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-black/90 border border-luxury-gold/30 text-luxury-gold text-[9px] font-mono font-bold uppercase tracking-wider backdrop-blur-sm">
                         <Tag className="w-3 h-3" />
                         {event.category}
                       </span>
+                    </div>
+
+                    <div className="absolute top-4 right-4">
+                      <ShareButton
+                        title={event.title}
+                        text={`${event.date} • ${event.location}`}
+                        path={`/events/${event.id}`}
+                      />
                     </div>
                   </div>
 
