@@ -239,6 +239,47 @@ export async function deleteMemberAccount(id: string): Promise<void> {
   await handleJson(res);
 }
 
+// Resends login credentials (a fresh temporary password) to an existing
+// member over both email and WhatsApp — the admin-side fix for exactly the
+// "email went out but the WhatsApp DM didn't" situation (e.g. the bot's
+// WhatsApp connection was down at that moment). whatsappAttempted tells the
+// caller whether there was even a phone number on file to try, separately
+// from whether that attempt actually succeeded (whatsappSent).
+export async function resendMemberCredentials(
+  id: string
+): Promise<{ member: MemberAccount; emailSent: boolean; mailMock: boolean; whatsappSent: boolean; whatsappAttempted: boolean }> {
+  const res = await fetch(`/api/admin/members/${encodeURIComponent(id)}/resend-credentials`, { method: 'POST' });
+  const result = await res.json().catch(() => ({}));
+  if (!res.ok || !result.success) {
+    throw new Error(result.error || 'Failed to resend credentials');
+  }
+  return {
+    member: result.data as MemberAccount,
+    emailSent: !!result.emailSent,
+    mailMock: !!result.mailMock,
+    whatsappSent: !!result.whatsappSent,
+    whatsappAttempted: !!result.whatsappAttempted,
+  };
+}
+
+// --- Member-facing: forgot password ---
+// Public (no token) by necessity — this is for a member who can't log in.
+// Always resolves with the same generic message whether or not the
+// username exists (see the server-side comment on this endpoint for why),
+// so this never throws just because the username wasn't found.
+export async function requestMemberPasswordReset(username: string): Promise<string> {
+  const res = await fetch('/api/member/forgot-password', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username }),
+  });
+  const result = await res.json().catch(() => ({}));
+  if (!res.ok || !result.success) {
+    throw new Error(result.error || 'Something went wrong. Please try again.');
+  }
+  return result.message as string;
+}
+
 // --- Member Portal account signup requests (WhatsApp self-registration) ---
 // A member submits one of these via the WhatsApp bot's JOIN flow. Approving
 // is what actually creates the real member account and sends login

@@ -617,6 +617,47 @@ used as any member's phone-on-file, with an email address that isn't
 already in the system, and reply JOIN when prompted. Then check the
 Signup Requests tab and approve it.
 
+### Request Access web form (no WhatsApp chat required)
+
+The exact same signup-request queue above, reached a second way — a plain
+web form with all four fields at once (Full Name, Username, Contact
+Number, Email) instead of a back-and-forth chat. From **Member Portal →
+Member Login**, there's a **"Don't have portal access yet? Request
+Access"** link that swaps the login form for this one. Submitting it lands
+in the same **Signup Requests** CMS tab, reviewed and approved exactly the
+same way (and the resulting login still gets delivered over WhatsApp +
+email) — only the front door differs from the chat-based JOIN flow.
+
+**A direct link straight to the form:** `https://de-elitesfamily.org/request-access`
+opens the site and jumps right past the login screen into the form — no
+taps needed to get there first. This is the one to post in the WhatsApp
+group if you'd rather not have people chat with the bot at all. (Visiting
+it while already logged in just opens the portal normally — the shortcut
+only applies to the logged-out login screen.)
+
+### Forgot password (member login page) + admin "Resend Credentials"
+
+Two related fixes for "the member never got their login details" or "they
+forgot their password," for members who aren't (or can't be) messaging the
+WhatsApp bot:
+
+- **Member Portal login screen → "Forgot password?"** — a member types
+  their username and gets a brand-new temporary password sent to both the
+  email and WhatsApp number on file, same as the WhatsApp self-service
+  menu's password reset, just reachable from the web login page directly.
+  For security, this always shows the same confirmation message whether or
+  not that username actually exists, so it can't be used to check which
+  usernames are registered.
+- **CMS → Member Accounts → "Resend Credentials"** (next to Save Changes
+  on any member's edit panel) — generates a fresh temporary password and
+  sends it over both channels in one click, for when an admin needs to
+  redeliver login details that didn't fully land the first time (e.g. an
+  approval's email went out but the WhatsApp DM failed because the bot's
+  WhatsApp connection had dropped — see Troubleshooting above for
+  reconnecting that). This is separate from the existing "Reset Password"
+  field on the same panel, which still exists for when you want to set an
+  *exact* password yourself rather than generate a random one.
+
 ### Member Data Collection & Profile Update (profession, business, skills)
 
 A short, optional profile on top of each member's account — their

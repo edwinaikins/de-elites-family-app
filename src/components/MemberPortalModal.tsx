@@ -14,7 +14,7 @@ import {
   fetchMyDuesHistory, fetchMyEventPayments, fetchMyDuesBalance, initializeDuesPayment,
   fetchMyExecutiveDuesHistory, fetchMyExecutiveDuesBalance, initializeExecutiveDuesPayment,
   fetchMyBills, initializeBillPayment,
-  verifyPayment, changeMyPassword,
+  verifyPayment, changeMyPassword, requestMemberPasswordReset,
 } from '../lib/memberClient';
 import { submitSignupRequest } from '../lib/cmsClient';
 import { payWithPaystack } from '../lib/paystack';
@@ -82,6 +82,17 @@ export default function MemberPortalModal() {
   const [signupSubmitting, setSignupSubmitting] = useState(false);
   const [signupSuccess, setSignupSuccess] = useState(false);
 
+  // "Forgot password?" form state — the web-login-page equivalent of the
+  // WhatsApp self-service menu's "Reset my password" option, for a member
+  // who isn't (or can't be) messaging the bot. Server always returns the
+  // same generic message whether or not the username exists, so there's
+  // no separate "not found" error state to handle here.
+  const [showForgotPassword, setShowForgotPassword] = useState(false);
+  const [forgotUsername, setForgotUsername] = useState('');
+  const [forgotSubmitting, setForgotSubmitting] = useState(false);
+  const [forgotError, setForgotError] = useState('');
+  const [forgotMessage, setForgotMessage] = useState('');
+
   const resetSignupRequestForm = () => {
     setSignupFullName('');
     setSignupUsername('');
@@ -111,6 +122,30 @@ export default function MemberPortalModal() {
       setSignupError(err.message || 'Something went wrong submitting your request. Please try again.');
     } finally {
       setSignupSubmitting(false);
+    }
+  };
+
+  const resetForgotPasswordForm = () => {
+    setForgotUsername('');
+    setForgotError('');
+    setForgotMessage('');
+  };
+
+  const handleForgotPasswordSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setForgotError('');
+    if (!forgotUsername.trim()) {
+      setForgotError('Please enter your username.');
+      return;
+    }
+    setForgotSubmitting(true);
+    try {
+      const message = await requestMemberPasswordReset(forgotUsername.trim());
+      setForgotMessage(message);
+    } catch (err: any) {
+      setForgotError(err.message || 'Something went wrong. Please try again.');
+    } finally {
+      setForgotSubmitting(false);
     }
   };
 
@@ -617,6 +652,69 @@ export default function MemberPortalModal() {
                     </button>
                   </form>
                 )
+              ) : showForgotPassword ? (
+                forgotMessage ? (
+                  <div className="text-center flex flex-col items-center gap-4 py-2">
+                    <div className="w-14 h-14 rounded-full bg-luxury-gold/10 border border-luxury-gold/30 flex items-center justify-center">
+                      <CheckCircle2 className="w-7 h-7 text-luxury-gold" />
+                    </div>
+                    <h3 className="font-display text-base font-black text-white uppercase tracking-wide">
+                      Check Your Messages
+                    </h3>
+                    <p className="font-sans text-xs text-gray-400 max-w-xs leading-relaxed">
+                      {forgotMessage}
+                    </p>
+                    <button
+                      onClick={() => { setShowForgotPassword(false); resetForgotPasswordForm(); }}
+                      className="mt-2 px-6 py-2.5 bg-luxury-gold hover:bg-luxury-gold-dark text-black font-sans font-black tracking-widest text-xs uppercase rounded transition-colors cursor-pointer"
+                    >
+                      Back to Login
+                    </button>
+                  </div>
+                ) : (
+                  <form onSubmit={handleForgotPasswordSubmit} className="space-y-4">
+                    <p className="font-sans text-[11px] text-gray-500 leading-relaxed -mt-1 mb-1">
+                      Enter your username and we'll send a new temporary password to the email and WhatsApp number on file for your account.
+                    </p>
+
+                    <div className="flex flex-col gap-1.5">
+                      <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">Username</label>
+                      <input
+                        type="text"
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        value={forgotUsername}
+                        onChange={(e) => setForgotUsername(e.target.value)}
+                        placeholder="yourusername"
+                        className="bg-jet-black border border-gray-800 rounded px-4 py-3 text-sm text-white focus:outline-none focus:border-luxury-gold placeholder:text-gray-700"
+                      />
+                    </div>
+
+                    {forgotError && (
+                      <div className="flex items-center gap-2 text-xs text-red-500 bg-red-500/10 border border-red-500/20 p-3 rounded">
+                        <AlertCircle className="shrink-0 w-4 h-4" />
+                        <span>{forgotError}</span>
+                      </div>
+                    )}
+
+                    <button
+                      type="submit"
+                      disabled={forgotSubmitting}
+                      className="w-full py-3.5 bg-gradient-to-r from-luxury-gold to-luxury-gold-dark text-black font-sans font-black tracking-widest text-xs uppercase rounded transition-all duration-300 shadow-[0_4px_15px_rgba(212,175,55,0.2)] hover:shadow-[0_0_25px_rgba(212,175,55,0.4)] hover:scale-[1.02] active:scale-[0.98] cursor-pointer flex items-center justify-center gap-2 disabled:opacity-60"
+                    >
+                      {forgotSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <KeyRound className="w-4 h-4" />}
+                      Send New Password
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => { setShowForgotPassword(false); resetForgotPasswordForm(); }}
+                      className="w-full text-center text-[10px] text-gray-500 hover:text-gray-300 uppercase tracking-widest font-bold pt-1 cursor-pointer"
+                    >
+                      Back to Login
+                    </button>
+                  </form>
+                )
               ) : (
                 <>
                   <form onSubmit={handleLoginSubmit} className="space-y-5">
@@ -659,12 +757,20 @@ export default function MemberPortalModal() {
                       {loginSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <LogIn className="w-4 h-4" />}
                       Sign In
                     </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setShowForgotPassword(true)}
+                      className="w-full text-center text-[10px] text-gray-500 hover:text-gray-300 uppercase tracking-wider font-bold cursor-pointer"
+                    >
+                      Forgot password?
+                    </button>
                   </form>
 
                   <button
                     type="button"
                     onClick={() => setShowSignupRequest(true)}
-                    className="mt-8 w-full text-center text-[10px] text-luxury-gold hover:text-luxury-gold-dark uppercase tracking-wider font-bold leading-relaxed cursor-pointer flex items-center justify-center gap-1.5"
+                    className="mt-6 w-full text-center text-[10px] text-luxury-gold hover:text-luxury-gold-dark uppercase tracking-wider font-bold leading-relaxed cursor-pointer flex items-center justify-center gap-1.5"
                   >
                     <UserPlus className="w-3 h-3" />
                     Don't have portal access yet? Request Access

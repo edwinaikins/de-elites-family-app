@@ -17,7 +17,7 @@ import {
   fetchWhatsAppStatus, fetchWhatsAppGroups, resendApplicationNotifications, WhatsAppStatus,
 } from '../lib/cmsClient';
 import {
-  fetchAllMemberAccounts, createMemberAccount, updateMemberAccount, deleteMemberAccount,
+  fetchAllMemberAccounts, createMemberAccount, updateMemberAccount, deleteMemberAccount, resendMemberCredentials,
   fetchMemberDuesHistoryAdmin, fetchMemberEventPaymentsAdmin, fetchAllPaymentsAdmin,
   fetchMemberExecutiveDuesHistoryAdmin, fetchMemberBillsAdmin,
   createManualPayment, deleteAdminPayment, updateAdminPayment,
@@ -133,6 +133,7 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
   // migration accounts may have this blank until an admin assigns one here.
   const [memberEditUsername, setMemberEditUsername] = useState('');
   const [memberResetPassword, setMemberResetPassword] = useState('');
+  const [resendingCredentialsId, setResendingCredentialsId] = useState<string | null>(null);
 
   // Reconciliation: every dues + event payment across every member ("who
   // paid what"), fetched once when the tab opens and filtered/sorted
@@ -1119,6 +1120,27 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
       }
     } catch (err: any) {
       setMemberAccountsError(err.message || 'Failed to update member account');
+    }
+  };
+
+  // One-click version of "Reset Password" above — generates its own
+  // temporary password instead of making the admin type one, and sends it
+  // over both email and WhatsApp. Exists for the exact situation where an
+  // approval or earlier send only got through on one channel (e.g. the
+  // WhatsApp bot's connection was down at that moment) and the member still
+  // needs their login details.
+  const handleResendMemberCredentials = async (id: string, fullName: string) => {
+    setResendingCredentialsId(id);
+    try {
+      const { emailSent, mailMock, whatsappSent, whatsappAttempted } = await resendMemberCredentials(id);
+      const parts: string[] = [];
+      parts.push(emailSent && !mailMock ? 'emailed' : emailSent && mailMock ? 'logged only (Test Mode — email server not configured)' : 'email failed');
+      parts.push(!whatsappAttempted ? 'no phone on file for WhatsApp' : whatsappSent ? 'sent to WhatsApp' : 'WhatsApp send failed');
+      triggerNotification(`New login details for ${fullName}: ${parts.join(', ')}.`);
+    } catch (err: any) {
+      triggerNotification(err.message || 'Failed to resend credentials.');
+    } finally {
+      setResendingCredentialsId(null);
     }
   };
 
@@ -3113,13 +3135,24 @@ export default function CmsDashboard({ isOpen, onClose }: CmsDashboardProps) {
                                 />
                               </div>
 
-                              <button
-                                onClick={() => handleSaveMemberEdits(m.id)}
-                                className="px-5 py-2.5 bg-gradient-to-r from-luxury-gold to-luxury-gold-dark text-black font-sans font-black tracking-widest text-[10px] uppercase rounded transition-all shadow-[0_2px_10px_rgba(212,175,55,0.2)] hover:shadow-[0_2px_15px_rgba(212,175,55,0.4)] flex items-center gap-2 cursor-pointer w-fit"
-                              >
-                                <Save className="w-3.5 h-3.5" />
-                                Save Changes
-                              </button>
+                              <div className="flex flex-wrap items-center gap-2.5">
+                                <button
+                                  onClick={() => handleSaveMemberEdits(m.id)}
+                                  className="px-5 py-2.5 bg-gradient-to-r from-luxury-gold to-luxury-gold-dark text-black font-sans font-black tracking-widest text-[10px] uppercase rounded transition-all shadow-[0_2px_10px_rgba(212,175,55,0.2)] hover:shadow-[0_2px_15px_rgba(212,175,55,0.4)] flex items-center gap-2 cursor-pointer w-fit"
+                                >
+                                  <Save className="w-3.5 h-3.5" />
+                                  Save Changes
+                                </button>
+                                <button
+                                  onClick={() => handleResendMemberCredentials(m.id, m.fullName)}
+                                  disabled={resendingCredentialsId === m.id}
+                                  title="Generate a new temporary password and resend login details via email + WhatsApp"
+                                  className="px-5 py-2.5 rounded bg-jet-black border border-luxury-gold/30 text-luxury-gold hover:bg-luxury-gold/10 font-sans font-black tracking-widest text-[10px] uppercase transition-colors cursor-pointer disabled:opacity-50 flex items-center gap-2 w-fit"
+                                >
+                                  {resendingCredentialsId === m.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                                  Resend Credentials
+                                </button>
+                              </div>
 
                               {m.bio && (
                                 <div className="pt-4 border-t border-gray-900">

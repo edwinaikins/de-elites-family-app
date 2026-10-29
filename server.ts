@@ -1257,6 +1257,47 @@ app.post("/api/member/login", async (req, res) => {
   }
 });
 
+// Public, unauthenticated by necessity — this is exactly what a member who
+// can't log in needs. Deliberately returns the same generic message
+// whether or not the username exists, and never a 404/409 either way, so
+// nothing here can be used to enumerate which usernames are registered.
+// Mirrors the existing "reset my password" option in the WhatsApp
+// self-service menu (same generateTempPassword + must_change_password
+// pattern) — this is just the web-login-page equivalent for a member who
+// isn't messaging the bot.
+app.post("/api/member/forgot-password", async (req, res) => {
+  const genericMessage = "If that username exists, a new temporary password has been sent to the email and WhatsApp number on file for that account.";
+  try {
+    const username = typeof req.body?.username === "string" ? req.body.username.trim().toLowerCase() : "";
+    if (!username) {
+      return res.status(400).json({ success: false, error: "Please enter your username." });
+    }
+    const db = getPool();
+    const result = await db.query("SELECT * FROM member_accounts WHERE username = $1 AND status = 'active'", [username]);
+    const row = result.rows[0];
+    if (row) {
+      const tempPassword = generateTempPassword();
+      const passwordHash = await bcrypt.hash(tempPassword, 10);
+      await db.query("UPDATE member_accounts SET password_hash = $2, must_change_password = true WHERE id = $1", [row.id, passwordHash]);
+      await sendPasswordResetEmail(row.full_name, row.email, row.username, tempPassword);
+      const jid = phoneToWhatsAppJid(row.phone);
+      if (jid) {
+        await sendWhatsAppText(
+          jid,
+          `🔑 Your DE ELITES FAMILY password was reset from the login page.\n\nUsername: *${row.username}*\nNew Temporary Password: *${tempPassword}*\n\nLog in at ${getSiteUrl()} — you'll be asked to choose your own password right away.\n\nDidn't request this? Contact an admin.`
+        );
+      }
+      console.log(`[Member Portal] Password reset via "forgot password" for member ${row.id}.`);
+    }
+    // Same response either way (see comment above this handler).
+    res.json({ success: true, message: genericMessage });
+  } catch (error: any) {
+    console.error("Failed to process forgot-password request:", error);
+    // Still avoid leaking anything specific — just a generic failure.
+    res.status(500).json({ success: false, error: "Something went wrong. Please try again, or contact an admin." });
+  }
+});
+
 app.get("/api/member/me", requireMemberAuth, async (req: any, res) => {
   try {
     const db = getPool();
@@ -2145,6 +2186,52 @@ app.patch("/api/admin/members/:id", async (req, res) => {
   } catch (error: any) {
     console.error("Failed to update member account:", error);
     res.status(500).json({ success: false, error: error.message || "Failed to update member account." });
+  }
+});
+
+// Admin: resend login credentials to an existing member — generates a
+// fresh temporary password (the old one is never stored anywhere retrievable,
+// only its bcrypt hash) and sends it over both channels, same as approving a
+// signup request. Exists for exactly the situation that prompted it: an
+// approval's email went out fine but the WhatsApp DM didn't (e.g. the bot's
+// WhatsApp connection was down at that moment) — this lets the admin retry
+// without having to invent a password by hand via the generic PATCH above.
+// whatsappAttempted tells the CMS whether a phone number was even on file to
+// try, separately from whether that attempt actually succeeded.
+app.post("/api/admin/members/:id/resend-credentials", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const db = getPool();
+    const result = await db.query("SELECT * FROM member_accounts WHERE id = $1", [id]);
+    const row = result.rows[0];
+    if (!row) return res.status(404).json({ success: false, error: "Member account not found." });
+
+    const tempPassword = generateTempPassword();
+    const passwordHash = await bcrypt.hash(tempPassword, 10);
+    await db.query("UPDATE member_accounts SET password_hash = $2, must_change_password = true WHERE id = $1", [id, passwordHash]);
+
+    const emailSent = await sendPasswordResetEmail(row.full_name, row.email, row.username, tempPassword);
+    const jid = phoneToWhatsAppJid(row.phone);
+    let whatsappSent = false;
+    if (jid) {
+      whatsappSent = await sendWhatsAppText(
+        jid,
+        `🔑 Your DE ELITES FAMILY login details, resent:\n\nUsername: *${row.username}*\nTemporary Password: *${tempPassword}*\n\nLog in at ${getSiteUrl()} (tap "Member Login") — you'll be asked to set your own password right away.`
+      );
+    }
+
+    const updated = await db.query("SELECT * FROM member_accounts WHERE id = $1", [id]);
+    res.json({
+      success: true,
+      data: mapMemberRow(updated.rows[0]),
+      emailSent,
+      mailMock: isMockMailEnabled(),
+      whatsappSent,
+      whatsappAttempted: Boolean(jid),
+    });
+  } catch (error: any) {
+    console.error("Failed to resend member credentials:", error);
+    res.status(500).json({ success: false, error: error.message || "Failed to resend credentials." });
   }
 });
 
