@@ -399,6 +399,18 @@ export interface MemberSignupRequest {
   decidedAt?: string;
 }
 
+// The web-form equivalent of the WhatsApp JOIN chat flow — one plain form
+// (name, username, contact, email) instead of a back-and-forth conversation,
+// submitted in a single POST /api/signup-requests call. Lands in the exact
+// same member_signup_requests queue either way, so an admin reviews both
+// sources from the one Signup Requests tab.
+export interface SignupRequestInput {
+  fullName: string;
+  username: string;
+  phone: string;
+  email: string;
+}
+
 // Money going OUT — the other half of the financial picture alongside dues/
 // event/bill payments (money coming in, tracked elsewhere via
 // AdminPaymentRecord). Not tied to any member. `category` is freeform text

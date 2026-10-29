@@ -1,4 +1,4 @@
-import { Pillar, Leader, GalleryItem, Shoutout, Member, EliteEvent, HeroConfig, CmsUser, MemberApplication } from '../types';
+import { Pillar, Leader, GalleryItem, Shoutout, Member, EliteEvent, HeroConfig, CmsUser, MemberApplication, SignupRequestInput, MemberSignupRequest } from '../types';
 
 export interface CmsDatabase {
   pillars: Pillar[];
@@ -157,6 +157,29 @@ export async function updateMemberApplicationStatus(
   const result = await res.json();
   if (!result.success) {
     throw new Error(result.error || "Failed to update application");
+  }
+
+  return result.data;
+}
+
+// --- Self-service signup request (web-form JOIN, no WhatsApp chat) ---
+// Public, unauthenticated, same as submitMemberApplication above — anyone
+// with the link can submit one. Lands in the same member_signup_requests
+// queue the WhatsApp JOIN flow uses, reviewed from the CMS's Signup
+// Requests tab either way.
+
+export async function submitSignupRequest(input: SignupRequestInput): Promise<MemberSignupRequest> {
+  const res = await fetch("/api/signup-requests", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(input),
+  });
+
+  const result = await res.json().catch(() => ({}));
+  if (!res.ok || !result.success) {
+    throw new Error(result.error || "Failed to submit your request.");
   }
 
   return result.data;

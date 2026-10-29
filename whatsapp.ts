@@ -64,7 +64,16 @@ let starting = false;
 // stays protocol-only: extract the text, hand it off, send back whatever
 // string comes back as a reply. Group messages never reach this handler —
 // see the messages.upsert listener in initWhatsApp for why.
-let directMessageHandler: ((fromJid: string, text: string) => Promise<string | void>) | null = null;
+//
+// The third argument, `phoneJid`, is the best-known *real phone-number* JID
+// for the sender (ending in @s.whatsapp.net), separate from `fromJid` (the
+// JID this chat actually uses for routing, which must stay untouched so
+// replies keep being sent to the right conversation). They're usually the
+// same value — they only diverge when WhatsApp's phone-number-privacy
+// addressing puts the chat on an opaque "@lid" JID instead of the real
+// number. See the messages.upsert listener below for how this gets resolved,
+// and server.ts (handleWhatsAppDirectMessage) for why callers need both.
+let directMessageHandler: ((fromJid: string, text: string, phoneJid?: string) => Promise<string | void>) | null = null;
 
 // Registers the function that handles an incoming 1-on-1 WhatsApp DM to the
 // linked number (e.g. the member self-service menu — reset password, update
@@ -74,7 +83,7 @@ let directMessageHandler: ((fromJid: string, text: string) => Promise<string | v
 // account itself, since letting arbitrary group chatter trigger account
 // changes would be chaotic and insecure. Call this once at startup, same as
 // initWhatsApp().
-export function onIncomingDirectMessage(handler: (fromJid: string, text: string) => Promise<string | void>): void {
+export function onIncomingDirectMessage(handler: (fromJid: string, text: string, phoneJid?: string) => Promise<string | void>): void {
   directMessageHandler = handler;
 }
 
@@ -144,7 +153,21 @@ export async function initWhatsApp(): Promise<void> {
           const text: string =
             msg.message?.conversation || msg.message?.extendedTextMessage?.text || msg.message?.buttonsResponseMessage?.selectedButtonId || "";
           if (!text.trim()) continue;
-          const reply = await directMessageHandler(fromJid, text.trim());
+          // Under WhatsApp's phone-number-privacy addressing, `remoteJid`
+          // can be an opaque "@lid" identifier instead of the sender's real
+          // phone-number JID — the digits in a @lid are NOT a phone number,
+          // so anything that reads a phone number out of `fromJid` directly
+          // (matching an existing member, saving a signup's phone) breaks
+          // silently for these senders. Baileys attaches the real
+          // phone-number JID separately on the key in this case (field name
+          // has shifted across versions — check whichever is present).
+          // `phoneJid` is left undefined when none of these are available,
+          // so callers know to ask the sender for their number directly
+          // instead of trusting a wrong one.
+          const phoneJid: string | undefined = fromJid.endsWith("@lid")
+            ? msg.key?.remoteJidAlt || msg.key?.senderPn || msg.key?.participantPn || msg.key?.participantAlt || undefined
+            : fromJid;
+          const reply = await directMessageHandler(fromJid, text.trim(), phoneJid);
           if (reply) await sock.sendMessage(fromJid, { text: reply });
         } catch (err) {
           console.error("[WhatsApp] Failed to handle incoming direct message:", err);

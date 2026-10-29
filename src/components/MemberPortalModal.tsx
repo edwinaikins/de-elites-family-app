@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import {
   X, LogIn, LogOut, Crown, User, Wallet, Ticket, AlertCircle,
   CheckCircle2, Loader2, Save, KeyRound, Calendar, MapPin, Clock,
-  CreditCard, Briefcase,
+  CreditCard, Briefcase, UserPlus,
 } from 'lucide-react';
 import { useMemberAuth } from '../context/MemberAuthContext';
 import { useCms } from '../context/CmsContext';
@@ -16,6 +16,7 @@ import {
   fetchMyBills, initializeBillPayment,
   verifyPayment, changeMyPassword,
 } from '../lib/memberClient';
+import { submitSignupRequest } from '../lib/cmsClient';
 import { payWithPaystack } from '../lib/paystack';
 import { WelfareDuesPayment, EventPayment, MemberBill, DuesBalance, EventRsvpResponse } from '../types';
 import { ImageUpload } from './ImageUpload';
@@ -64,6 +65,51 @@ export default function MemberPortalModal() {
   const [loginPassword, setLoginPassword] = useState('');
   const [loginError, setLoginError] = useState('');
   const [loginSubmitting, setLoginSubmitting] = useState(false);
+
+  // "Request Access" form state — the plain web-form version of the
+  // WhatsApp JOIN flow, shown in place of the login form when the member
+  // doesn't have portal credentials yet. Submits straight into the same
+  // member_signup_requests queue an admin reviews from the CMS.
+  const [showSignupRequest, setShowSignupRequest] = useState(false);
+  const [signupFullName, setSignupFullName] = useState('');
+  const [signupUsername, setSignupUsername] = useState('');
+  const [signupPhone, setSignupPhone] = useState('');
+  const [signupEmail, setSignupEmail] = useState('');
+  const [signupError, setSignupError] = useState('');
+  const [signupSubmitting, setSignupSubmitting] = useState(false);
+  const [signupSuccess, setSignupSuccess] = useState(false);
+
+  const resetSignupRequestForm = () => {
+    setSignupFullName('');
+    setSignupUsername('');
+    setSignupPhone('');
+    setSignupEmail('');
+    setSignupError('');
+    setSignupSuccess(false);
+  };
+
+  const handleSignupRequestSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSignupError('');
+    if (!signupFullName.trim() || !signupUsername.trim() || !signupPhone.trim() || !signupEmail.trim()) {
+      setSignupError('Please fill in all four fields.');
+      return;
+    }
+    setSignupSubmitting(true);
+    try {
+      await submitSignupRequest({
+        fullName: signupFullName.trim(),
+        username: signupUsername.trim(),
+        phone: signupPhone.trim(),
+        email: signupEmail.trim(),
+      });
+      setSignupSuccess(true);
+    } catch (err: any) {
+      setSignupError(err.message || 'Something went wrong submitting your request. Please try again.');
+    } finally {
+      setSignupSubmitting(false);
+    }
+  };
 
   // Profile/bio editor state
   const [bioDraft, setBioDraft] = useState('');
@@ -462,51 +508,156 @@ export default function MemberPortalModal() {
                 </p>
               </div>
 
-              <form onSubmit={handleLoginSubmit} className="space-y-5">
-                <div className="flex flex-col gap-1.5">
-                  <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">Username</label>
-                  <input
-                    type="text"
-                    autoCapitalize="none"
-                    autoCorrect="off"
-                    value={loginUsername}
-                    onChange={(e) => setLoginUsername(e.target.value)}
-                    placeholder="yourusername"
-                    className="bg-jet-black border border-gray-800 rounded px-4 py-3 text-sm text-white focus:outline-none focus:border-luxury-gold placeholder:text-gray-700"
-                  />
-                </div>
-
-                <div className="flex flex-col gap-1.5">
-                  <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">Password</label>
-                  <input
-                    type="password"
-                    value={loginPassword}
-                    onChange={(e) => setLoginPassword(e.target.value)}
-                    placeholder="••••••••"
-                    className="bg-jet-black border border-gray-800 rounded px-4 py-3 text-sm text-white focus:outline-none focus:border-luxury-gold placeholder:text-gray-700"
-                  />
-                </div>
-
-                {loginError && (
-                  <div className="flex items-center gap-2 text-xs text-red-500 bg-red-500/10 border border-red-500/20 p-3 rounded">
-                    <AlertCircle className="shrink-0 w-4 h-4" />
-                    <span>{loginError}</span>
+              {showSignupRequest ? (
+                signupSuccess ? (
+                  <div className="text-center flex flex-col items-center gap-4 py-2">
+                    <div className="w-14 h-14 rounded-full bg-luxury-gold/10 border border-luxury-gold/30 flex items-center justify-center">
+                      <CheckCircle2 className="w-7 h-7 text-luxury-gold" />
+                    </div>
+                    <h3 className="font-display text-base font-black text-white uppercase tracking-wide">
+                      Request Submitted
+                    </h3>
+                    <p className="font-sans text-xs text-gray-400 max-w-xs leading-relaxed">
+                      An admin will review your request. You'll get your username and a temporary password sent straight to your WhatsApp and email as soon as it's approved.
+                    </p>
+                    <button
+                      onClick={() => { setShowSignupRequest(false); resetSignupRequestForm(); }}
+                      className="mt-2 px-6 py-2.5 bg-luxury-gold hover:bg-luxury-gold-dark text-black font-sans font-black tracking-widest text-xs uppercase rounded transition-colors cursor-pointer"
+                    >
+                      Back to Login
+                    </button>
                   </div>
-                )}
+                ) : (
+                  <form onSubmit={handleSignupRequestSubmit} className="space-y-4">
+                    <p className="font-sans text-[11px] text-gray-500 leading-relaxed -mt-1 mb-1">
+                      Request portal access — fill this in and an admin will review it, then DM you your login on WhatsApp.
+                    </p>
 
-                <button
-                  type="submit"
-                  disabled={loginSubmitting}
-                  className="w-full py-3.5 bg-gradient-to-r from-luxury-gold to-luxury-gold-dark text-black font-sans font-black tracking-widest text-xs uppercase rounded transition-all duration-300 shadow-[0_4px_15px_rgba(212,175,55,0.2)] hover:shadow-[0_0_25px_rgba(212,175,55,0.4)] hover:scale-[1.02] active:scale-[0.98] cursor-pointer flex items-center justify-center gap-2 disabled:opacity-60"
-                >
-                  {loginSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <LogIn className="w-4 h-4" />}
-                  Sign In
-                </button>
-              </form>
+                    <div className="flex flex-col gap-1.5">
+                      <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">Full Name</label>
+                      <input
+                        type="text"
+                        value={signupFullName}
+                        onChange={(e) => setSignupFullName(e.target.value)}
+                        placeholder="e.g. Ama Serwaa"
+                        className="bg-jet-black border border-gray-800 rounded px-4 py-3 text-sm text-white focus:outline-none focus:border-luxury-gold placeholder:text-gray-700"
+                      />
+                    </div>
 
-              <p className="mt-8 text-center text-[10px] text-gray-600 uppercase tracking-wider font-semibold leading-relaxed">
-                Don't have portal access yet? Ask a family administrator to set up your account.
-              </p>
+                    <div className="flex flex-col gap-1.5">
+                      <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">Username</label>
+                      <input
+                        type="text"
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        value={signupUsername}
+                        onChange={(e) => setSignupUsername(e.target.value.toLowerCase())}
+                        placeholder="e.g. ama.serwaa"
+                        className="bg-jet-black border border-gray-800 rounded px-4 py-3 text-sm text-white focus:outline-none focus:border-luxury-gold placeholder:text-gray-700"
+                      />
+                    </div>
+
+                    <div className="flex flex-col gap-1.5">
+                      <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">Contact Number</label>
+                      <input
+                        type="tel"
+                        value={signupPhone}
+                        onChange={(e) => setSignupPhone(e.target.value)}
+                        placeholder="0244123456"
+                        className="bg-jet-black border border-gray-800 rounded px-4 py-3 text-sm text-white focus:outline-none focus:border-luxury-gold placeholder:text-gray-700"
+                      />
+                    </div>
+
+                    <div className="flex flex-col gap-1.5">
+                      <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">Email</label>
+                      <input
+                        type="email"
+                        value={signupEmail}
+                        onChange={(e) => setSignupEmail(e.target.value)}
+                        placeholder="you@example.com"
+                        className="bg-jet-black border border-gray-800 rounded px-4 py-3 text-sm text-white focus:outline-none focus:border-luxury-gold placeholder:text-gray-700"
+                      />
+                    </div>
+
+                    {signupError && (
+                      <div className="flex items-center gap-2 text-xs text-red-500 bg-red-500/10 border border-red-500/20 p-3 rounded">
+                        <AlertCircle className="shrink-0 w-4 h-4" />
+                        <span>{signupError}</span>
+                      </div>
+                    )}
+
+                    <button
+                      type="submit"
+                      disabled={signupSubmitting}
+                      className="w-full py-3.5 bg-gradient-to-r from-luxury-gold to-luxury-gold-dark text-black font-sans font-black tracking-widest text-xs uppercase rounded transition-all duration-300 shadow-[0_4px_15px_rgba(212,175,55,0.2)] hover:shadow-[0_0_25px_rgba(212,175,55,0.4)] hover:scale-[1.02] active:scale-[0.98] cursor-pointer flex items-center justify-center gap-2 disabled:opacity-60"
+                    >
+                      {signupSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <UserPlus className="w-4 h-4" />}
+                      Submit Request
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => { setShowSignupRequest(false); resetSignupRequestForm(); }}
+                      className="w-full text-center text-[10px] text-gray-500 hover:text-gray-300 uppercase tracking-widest font-bold pt-1 cursor-pointer"
+                    >
+                      Back to Login
+                    </button>
+                  </form>
+                )
+              ) : (
+                <>
+                  <form onSubmit={handleLoginSubmit} className="space-y-5">
+                    <div className="flex flex-col gap-1.5">
+                      <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">Username</label>
+                      <input
+                        type="text"
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        value={loginUsername}
+                        onChange={(e) => setLoginUsername(e.target.value)}
+                        placeholder="yourusername"
+                        className="bg-jet-black border border-gray-800 rounded px-4 py-3 text-sm text-white focus:outline-none focus:border-luxury-gold placeholder:text-gray-700"
+                      />
+                    </div>
+
+                    <div className="flex flex-col gap-1.5">
+                      <label className="font-sans text-[10px] font-black uppercase tracking-widest text-gray-400">Password</label>
+                      <input
+                        type="password"
+                        value={loginPassword}
+                        onChange={(e) => setLoginPassword(e.target.value)}
+                        placeholder="••••••••"
+                        className="bg-jet-black border border-gray-800 rounded px-4 py-3 text-sm text-white focus:outline-none focus:border-luxury-gold placeholder:text-gray-700"
+                      />
+                    </div>
+
+                    {loginError && (
+                      <div className="flex items-center gap-2 text-xs text-red-500 bg-red-500/10 border border-red-500/20 p-3 rounded">
+                        <AlertCircle className="shrink-0 w-4 h-4" />
+                        <span>{loginError}</span>
+                      </div>
+                    )}
+
+                    <button
+                      type="submit"
+                      disabled={loginSubmitting}
+                      className="w-full py-3.5 bg-gradient-to-r from-luxury-gold to-luxury-gold-dark text-black font-sans font-black tracking-widest text-xs uppercase rounded transition-all duration-300 shadow-[0_4px_15px_rgba(212,175,55,0.2)] hover:shadow-[0_0_25px_rgba(212,175,55,0.4)] hover:scale-[1.02] active:scale-[0.98] cursor-pointer flex items-center justify-center gap-2 disabled:opacity-60"
+                    >
+                      {loginSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <LogIn className="w-4 h-4" />}
+                      Sign In
+                    </button>
+                  </form>
+
+                  <button
+                    type="button"
+                    onClick={() => setShowSignupRequest(true)}
+                    className="mt-8 w-full text-center text-[10px] text-luxury-gold hover:text-luxury-gold-dark uppercase tracking-wider font-bold leading-relaxed cursor-pointer flex items-center justify-center gap-1.5"
+                  >
+                    <UserPlus className="w-3 h-3" />
+                    Don't have portal access yet? Request Access
+                  </button>
+                </>
+              )}
             </div>
           ) : member.mustChangePassword ? (
             // --- MANDATORY PASSWORD CHANGE VIEW ---

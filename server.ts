@@ -650,9 +650,9 @@ initWhatsApp();
 // on top of the one inside handleWhatsAppDirectMessage itself — a bug in
 // this flow must never crash the WhatsApp connection or the server, and the
 // member should always get SOME reply rather than silence.
-onIncomingDirectMessage(async (fromJid, text) => {
+onIncomingDirectMessage(async (fromJid, text, phoneJid) => {
   try {
-    return await handleWhatsAppDirectMessage(fromJid, text);
+    return await handleWhatsAppDirectMessage(fromJid, text, phoneJid);
   } catch (err) {
     console.error("[WhatsApp Self-Service] Failed to handle incoming message:", err);
     return "Sorry, something went wrong on our end. Please try again in a moment, or contact an admin.";
@@ -1423,7 +1423,11 @@ type WhatsAppSelfServiceStep =
   | "signup_offer"
   | "signup_awaiting_name"
   | "signup_awaiting_email"
-  | "signup_awaiting_username";
+  | "signup_awaiting_username"
+  // Only reached when we couldn't read a real phone number off the chat at
+  // all (see signupPhoneJid below) — asks the member to type it in directly
+  // rather than saving something wrong.
+  | "signup_awaiting_phone";
 interface WhatsAppSelfServiceState {
   step: WhatsAppSelfServiceStep;
   memberId: string;
@@ -1443,6 +1447,12 @@ interface WhatsAppSelfServiceState {
   // actually submitted.
   signupFullName?: string;
   signupEmail?: string;
+  signupUsername?: string;
+  // The real phone-number JID resolved for this chat when the sub-flow
+  // started (see the `phoneJid` param on handleWhatsAppDirectMessage below).
+  // Undefined means we couldn't resolve one automatically — the sub-flow
+  // then falls back to signup_awaiting_phone and asks for it directly.
+  signupPhoneJid?: string;
 }
 
 // In-memory only — these conversations are short-lived (a minute or two of
@@ -1461,7 +1471,34 @@ function whatsappSelfServiceMenu(fullName: string): string {
 // must never crash the WhatsApp connection or, worse, the server. Accepts
 // loose matches ("reset", "password", "phone", "email") alongside the exact
 // menu numbers, so it's forgiving of however someone naturally replies.
-async function handleWhatsAppDirectMessage(fromJid: string, text: string): Promise<string> {
+// Shared by every entry point that ends in a pending member_signup_requests
+// row — the WhatsApp JOIN chat flow (finalizeSignupRequest below) and the
+// plain web-form version (POST /api/signup-requests further down this
+// file). Pulled out so the two can never drift out of sync on what actually
+// gets inserted.
+async function insertSignupRequest(fullName: string, username: string, email: string, phone: string) {
+  const db = getPool();
+  const id = `signup-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const result = await db.query(
+    `INSERT INTO member_signup_requests (id, full_name, username, email, phone, status)
+     VALUES ($1,$2,$3,$4,$5,'pending') RETURNING *`,
+    [id, fullName, username, email, phone]
+  );
+  return mapSignupRequestRow(result.rows[0]);
+}
+
+// Shared by both ways the self-registration sub-flow can reach a phone
+// number — resolved automatically from the chat's JID, or typed in by the
+// member when that resolution fails (see signup_awaiting_username and
+// signup_awaiting_phone above).
+async function finalizeSignupRequest(fromJid: string, fullName: string, email: string, username: string, phone: string): Promise<string> {
+  const created = await insertSignupRequest(fullName, username, email, phone);
+  whatsappSelfServiceState.delete(fromJid);
+  console.log(`[WhatsApp Self-Service] New signup request submitted via WhatsApp DM: ${created.id} (username ${username}).`);
+  return `✅ Thanks, ${fullName.split(" ")[0]}! Your request (username *${username}*) has been submitted for admin review.\n\nYou'll get a message right here with your login details as soon as it's approved. Thanks for your patience! 🙏`;
+}
+
+async function handleWhatsAppDirectMessage(fromJid: string, text: string, phoneJid?: string): Promise<string> {
   const now = Date.now();
   const existing = whatsappSelfServiceState.get(fromJid);
   if (existing && existing.expiresAt < now) whatsappSelfServiceState.delete(fromJid);
@@ -1475,7 +1512,12 @@ async function handleWhatsAppDirectMessage(fromJid: string, text: string): Promi
   }
 
   if (!state) {
-    const member = await findMemberByWhatsAppJid(fromJid);
+    // Prefer the resolved real phone-number JID over fromJid — they're the
+    // same value for almost every sender, but fromJid can be an opaque
+    // "@lid" JID under WhatsApp's phone-number-privacy addressing, which
+    // would never match any member's phone-on-file. See phoneJid's doc
+    // comment in whatsapp.ts for why these two can diverge.
+    const member = await findMemberByWhatsAppJid(phoneJid || fromJid);
     if (!member) {
       // No account's phone-on-file matches this WhatsApp number — rather
       // than a dead end, offer to create one right here (see the
@@ -1484,7 +1526,7 @@ async function handleWhatsAppDirectMessage(fromJid: string, text: string): Promi
       // email-uniqueness check in signup_awaiting_email is what catches
       // that case and sends them to an admin instead of creating a
       // duplicate account.
-      whatsappSelfServiceState.set(fromJid, { step: "signup_offer", memberId: "", expiresAt: now + WHATSAPP_SELF_SERVICE_TIMEOUT_MS });
+      whatsappSelfServiceState.set(fromJid, { step: "signup_offer", memberId: "", signupPhoneJid: phoneJid, expiresAt: now + WHATSAPP_SELF_SERVICE_TIMEOUT_MS });
       return "👋 Hi! I couldn't find a DE ELITES FAMILY account linked to this WhatsApp number yet.\n\nWant to set one up right now? It only takes a minute. Reply *JOIN* to get started, or ignore this message if that wasn't you.";
     }
     whatsappSelfServiceState.set(fromJid, { step: "menu", memberId: member.id, expiresAt: now + WHATSAPP_SELF_SERVICE_TIMEOUT_MS });
@@ -1617,7 +1659,12 @@ async function handleWhatsAppDirectMessage(fromJid: string, text: string): Promi
   // is the block to revisit.
   if (state.step === "signup_offer") {
     if (lower === "join" || lower.includes("join") || lower === "yes" || lower.includes("sign") || lower.includes("start")) {
-      whatsappSelfServiceState.set(fromJid, { step: "signup_awaiting_name", memberId: "", expiresAt: now + WHATSAPP_SELF_SERVICE_TIMEOUT_MS });
+      whatsappSelfServiceState.set(fromJid, {
+        step: "signup_awaiting_name",
+        memberId: "",
+        signupPhoneJid: state.signupPhoneJid,
+        expiresAt: now + WHATSAPP_SELF_SERVICE_TIMEOUT_MS,
+      });
       return "Great! Let's get you set up. What's your full name?";
     }
     whatsappSelfServiceState.delete(fromJid);
@@ -1633,6 +1680,7 @@ async function handleWhatsAppDirectMessage(fromJid: string, text: string): Promi
       step: "signup_awaiting_email",
       memberId: "",
       signupFullName: fullName,
+      signupPhoneJid: state.signupPhoneJid,
       expiresAt: now + WHATSAPP_SELF_SERVICE_TIMEOUT_MS,
     });
     return `Thanks, ${fullName.split(" ")[0]}! Now, what's your email address? (used for payment receipts and account recovery)`;
@@ -1658,6 +1706,7 @@ async function handleWhatsAppDirectMessage(fromJid: string, text: string): Promi
       memberId: "",
       signupFullName: state.signupFullName,
       signupEmail: email,
+      signupPhoneJid: state.signupPhoneJid,
       expiresAt: now + WHATSAPP_SELF_SERVICE_TIMEOUT_MS,
     });
     return "Last step — pick a username you'd like to log in with (3-32 characters: letters, numbers, dots, underscores, or hyphens only — e.g. ama.serwaa).";
@@ -1675,16 +1724,32 @@ async function handleWhatsAppDirectMessage(fromJid: string, text: string): Promi
     }
     const fullName = state.signupFullName || "Member";
     const email = state.signupEmail || "";
-    const phone = normalizePhoneToLocal(fromJid.split("@")[0]) || fromJid.split("@")[0];
-    const id = `signup-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    await db.query(
-      `INSERT INTO member_signup_requests (id, full_name, username, email, phone, status)
-       VALUES ($1,$2,$3,$4,$5,'pending')`,
-      [id, fullName, username, email, phone]
-    );
-    whatsappSelfServiceState.delete(fromJid);
-    console.log(`[WhatsApp Self-Service] New signup request submitted via WhatsApp DM: ${id} (username ${username}).`);
-    return `✅ Thanks, ${fullName.split(" ")[0]}! Your request (username *${username}*) has been submitted for admin review.\n\nYou'll get a message right here with your login details as soon as it's approved. Thanks for your patience! 🙏`;
+    // Prefer the phone-number JID resolved when this sub-flow started over
+    // fromJid itself — see signupPhoneJid's doc comment and the "@lid"
+    // explanation in whatsapp.ts. If that couldn't be resolved at all
+    // (undefined), don't guess: ask the member for their number directly
+    // rather than saving something wrong.
+    const resolvedPhone = state.signupPhoneJid ? normalizePhoneToLocal(state.signupPhoneJid.split("@")[0]) : undefined;
+    if (!resolvedPhone) {
+      whatsappSelfServiceState.set(fromJid, {
+        step: "signup_awaiting_phone",
+        memberId: "",
+        signupFullName: fullName,
+        signupEmail: email,
+        signupUsername: username,
+        expiresAt: now + WHATSAPP_SELF_SERVICE_TIMEOUT_MS,
+      });
+      return "One more thing — I couldn't read a phone number off this chat automatically. What's the best phone number to reach you on? (e.g. 0244123456)";
+    }
+    return finalizeSignupRequest(fromJid, fullName, email, username, resolvedPhone);
+  }
+
+  if (state.step === "signup_awaiting_phone") {
+    const resolvedPhone = normalizePhoneToLocal(text.trim());
+    if (!resolvedPhone) {
+      return "That doesn't look like a valid phone number — please send it as 10 digits starting with 0 (e.g. 0244123456), or reply 'cancel' to stop.";
+    }
+    return finalizeSignupRequest(fromJid, state.signupFullName || "Member", state.signupEmail || "", state.signupUsername || "", resolvedPhone);
   }
 
   // Shouldn't be reachable, but fall back safely rather than leaving the
@@ -1850,6 +1915,58 @@ app.post("/api/admin/members", async (req, res) => {
 // the CMS's Signup Requests tab) and either approves it, which is what
 // actually creates the member_accounts row and sends login details, or
 // rejects it, which just lets the member know via WhatsApp DM.
+
+// Public: the plain web-form version of the same thing — one form with all
+// four fields at once (name, username, contact, email) instead of a
+// back-and-forth WhatsApp chat. Submitted from the Member Portal's login
+// screen ("Request Access"), or any link shared straight to it (e.g. posted
+// in the WhatsApp group). Lands in the exact same member_signup_requests
+// queue and gets reviewed the exact same way — only the front door differs.
+app.post("/api/signup-requests", async (req, res) => {
+  try {
+    const b = req.body || {};
+    const fullName = typeof b.fullName === "string" ? b.fullName.trim().replace(/\s+/g, " ") : "";
+    const username = typeof b.username === "string" ? b.username.trim().toLowerCase() : "";
+    const email = typeof b.email === "string" ? b.email.trim().toLowerCase() : "";
+    const phoneInput = typeof b.phone === "string" ? b.phone.trim() : "";
+
+    if (fullName.length < 2 || fullName.length > 100) {
+      return res.status(400).json({ success: false, error: "Please enter your full name." });
+    }
+    if (!/^[a-z0-9._-]{3,32}$/.test(username)) {
+      return res.status(400).json({ success: false, error: "Username must be 3-32 characters: letters, numbers, dots, underscores, or hyphens only." });
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ success: false, error: "Please enter a valid email address." });
+    }
+    const phone = normalizePhoneToLocal(phoneInput);
+    if (!phone) {
+      return res.status(400).json({ success: false, error: "Please enter a valid phone number, e.g. 0244123456." });
+    }
+
+    const db = getPool();
+    const takenUsernameAccount = await db.query("SELECT 1 FROM member_accounts WHERE username = $1", [username]);
+    const takenUsernameRequest = await db.query("SELECT 1 FROM member_signup_requests WHERE username = $1 AND status = 'pending'", [username]);
+    if ((takenUsernameAccount.rowCount ?? 0) > 0 || (takenUsernameRequest.rowCount ?? 0) > 0) {
+      return res.status(409).json({ success: false, error: "That username is already taken. Please choose a different one." });
+    }
+    const takenEmailAccount = await db.query("SELECT 1 FROM member_accounts WHERE email = $1", [email]);
+    if ((takenEmailAccount.rowCount ?? 0) > 0) {
+      return res.status(409).json({ success: false, error: "That email is already linked to an existing account. If that's you, contact an admin to update your details." });
+    }
+    const takenEmailRequest = await db.query("SELECT 1 FROM member_signup_requests WHERE email = $1 AND status = 'pending'", [email]);
+    if ((takenEmailRequest.rowCount ?? 0) > 0) {
+      return res.status(409).json({ success: false, error: "There's already a pending request with that email, waiting on an admin to review it." });
+    }
+
+    const created = await insertSignupRequest(fullName, username, email, phone);
+    console.log(`[Signup Requests] New signup request submitted via web form: ${created.id} (username ${username}).`);
+    res.json({ success: true, data: created });
+  } catch (error: any) {
+    console.error("Failed to submit signup request:", error);
+    res.status(500).json({ success: false, error: error.message || "Failed to submit your request." });
+  }
+});
 
 app.get("/api/admin/signup-requests", async (req, res) => {
   try {
