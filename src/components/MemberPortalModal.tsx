@@ -51,7 +51,10 @@ function formatChannel(channel?: string): string {
 }
 
 export default function MemberPortalModal() {
-  const { member, token, loading, isPortalOpen, closePortal, login, logout, updateBio, refreshProfile } = useMemberAuth();
+  const {
+    member, token, loading, isPortalOpen, closePortal, login, logout, updateBio, refreshProfile,
+    requestAccessIntent, clearRequestAccessIntent,
+  } = useMemberAuth();
   const { events } = useCms();
   const { paidEventIds, payingId, errorById, payForEvent } = useEventPayments();
   const { rsvpByEventId, submittingId: rsvpSubmittingId, errorById: rsvpErrorById, rsvpForEvent } = useEventRsvp();
@@ -110,6 +113,16 @@ export default function MemberPortalModal() {
       setSignupSubmitting(false);
     }
   };
+
+  // Consumes a direct /request-access link (see MemberAuthContext) — jump
+  // straight to the request form instead of the login screen, once, the
+  // first time this modal is open while that intent is set.
+  useEffect(() => {
+    if (isPortalOpen && requestAccessIntent) {
+      setShowSignupRequest(true);
+      clearRequestAccessIntent();
+    }
+  }, [isPortalOpen, requestAccessIntent, clearRequestAccessIntent]);
 
   // Profile/bio editor state
   const [bioDraft, setBioDraft] = useState('');
